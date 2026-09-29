@@ -604,8 +604,15 @@ or — with no channel — for any channel the tenant has a provider for, listed
 ### `GET /v1/campaigns?status=` · `GET /v1/campaigns/:id` · `PATCH /v1/campaigns/:id`
 
 Each campaign carries `status`, `nextRunAt` and `lastRun` (the newest run's
-counts, below). `PATCH` takes any create field and is draft-only
-(`409 not_draft`).
+counts, below).
+
+`PATCH` takes any create field. It edits a `draft`, or a `paused` campaign
+between runs — no run `expanding` or `sending`. Anything else is
+`409 not_editable`: a run in progress is never changed under it. For a paused
+campaign, `scheduledAt` must be in the future only if the patch sets it, and
+`nextRunAt` is recomputed from the edit; `resume` queues the next run for it,
+or finishes the campaign if the edit leaves no future run. Emits
+`campaign.edited` when something changed.
 
 Statuses: `draft`, `scheduled`, `running`, `paused`, `done`, `cancelled`,
 `failed`.
@@ -620,6 +627,23 @@ now), or for the next cron time.
   blocking everyone; preview the audience to see why.
 - `409 too_many_running` — the tenant already has 5 campaigns `running`.
 - `400 scheduled_at_past`, `400 recurrence_never_fires`, `409 not_draft`.
+
+### `POST /v1/campaigns/:id/unschedule`
+
+`scheduled` or `paused` → `draft`, while the campaign has no runs at all: for
+a typo spotted before it goes out. The waiting run is taken off the queue, so a
+reschedule runs at its new time. `409 already_started` once a run has begun
+(pause and edit between runs, or duplicate it); `409 invalid_state` otherwise.
+Emits `campaign.unscheduled`.
+
+### `POST /v1/campaigns/:id/duplicate`
+
+Body optional: `{ "name": "…" }`. A new `draft` copied from a campaign in any
+status: audience, template, channel, purpose, variables, recurrence, timezone
+and throttle. `name` defaults to `<name> (copy)`; `scheduledAt` is copied only
+if it is still in the future. Every create check runs again, so a template
+deleted since is `400 template_not_found`. `201 { campaign }`. Emits
+`campaign.created` with `duplicatedFrom`.
 
 ### `POST /v1/campaigns/:id/pause` · `/resume` · `/cancel`
 
@@ -1002,6 +1026,10 @@ here was later rolled back.
 `campaign.run.finished` (payload: `runId`, `runNo`, `audienceSize`, `queued`,
 `blocked`, `skipped`) · `campaign.paused` · `campaign.resumed` ·
 `campaign.cancelled` · `campaign.failed` · `campaign.done` ·
+`campaign.unscheduled` (payload: `from`) · `campaign.edited` (payload:
+`status`, `appliesFromRun`, `changes: { field: { from, to } }` with only the
+fields that changed — so "runs 1–3 used A, run 4 on used B" is read from the
+log) ·
 `campaign.run.recovered` (payload: `runId`, `runNo`, `action` — one of
 `resume_expansion`, `enqueue_batch`, `finish`)
 
