@@ -72,6 +72,24 @@ export async function enqueue(
   );
 }
 
+/**
+ * Cancel the job with this singleton key that is still waiting to start, on
+ * the caller's transaction. A job already running is left alone; its worker
+ * reads the state it acts on and stops by itself. Returns how many it cancelled.
+ */
+export async function cancelWaiting(tx: Tx, name: string, singletonKey: string): Promise<number> {
+  const b = queue();
+  return asOwner(tx, async () => {
+    const rows = await tx<{ id: string }[]>`
+      select id::text as id from pgboss.job
+      where name = ${name} and singleton_key = ${singletonKey} and state in ('created', 'retry')
+    `;
+    if (rows.length === 0) return 0;
+    await b.cancel(name, rows.map((r) => r.id), { db: onTransaction(tx) });
+    return rows.length;
+  });
+}
+
 /** pg-boss speaks to whatever exposes executeSql; hand it the open transaction. */
 function onTransaction(tx: Tx): PgBoss.Db {
   return {

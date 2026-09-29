@@ -1,5 +1,5 @@
 import type { Tx } from '../../db/client.js';
-import { enqueue } from '../../jobs/queue.js';
+import { cancelWaiting, enqueue } from '../../jobs/queue.js';
 import type { Channel, Purpose } from '../../spine/contacts/normalize.js';
 import { emit } from '../../spine/events/index.js';
 import { configuredChannels, messageStatuses, templateChannels } from '../messaging/index.js';
@@ -84,8 +84,17 @@ export type CampaignInput = {
   throttlePerMinute?: number | undefined;
 };
 
-/** Everything create checks that a draft must still satisfy when edited. */
-async function validate(tx: Tx, tenantId: string, input: CampaignInput): Promise<void> {
+/**
+ * Everything create checks that a campaign must still satisfy when edited.
+ * `checkScheduledAt: false` skips the future check, for an edit that leaves
+ * a recurring campaign's long-past start alone.
+ */
+async function validate(
+  tx: Tx,
+  tenantId: string,
+  input: CampaignInput,
+  opts: { checkScheduledAt?: boolean } = {},
+): Promise<void> {
   const audience = await getAudience(tx, input.audienceId);
   if (!audience || audience.tenant_id !== tenantId) {
     throw new CampaignError('audience_not_found', 404, 'no such audience');
@@ -118,14 +127,14 @@ async function validate(tx: Tx, tenantId: string, input: CampaignInput): Promise
     }
   }
 
-  if (input.scheduledAt && input.scheduledAt.getTime() <= Date.now()) {
+  if ((opts.checkScheduledAt ?? true) && input.scheduledAt && input.scheduledAt.getTime() <= Date.now()) {
     throw new CampaignError('scheduled_at_past', 400, 'scheduledAt must be in the future');
   }
 }
 
 export async function createCampaign(
   tx: Tx,
-  input: CampaignInput & { tenantId: string },
+  input: CampaignInput & { tenantId: string; duplicatedFrom?: string },
 ): Promise<CampaignRow> {
   await validate(tx, input.tenantId, input);
 
@@ -148,7 +157,12 @@ export async function createCampaign(
     type: 'campaign.created',
     subjectType: 'campaign',
     subjectId: row.id,
-    payload: { name: row.name, audienceId: row.audience_id, purpose: row.purpose },
+    payload: {
+      name: row.name,
+      audienceId: row.audience_id,
+      purpose: row.purpose,
+      ...(input.duplicatedFrom ? { duplicatedFrom: input.duplicatedFrom } : {}),
+    },
   });
   return row;
 }
@@ -160,15 +174,26 @@ export async function getCampaign(tx: Tx, id: string, lock = false): Promise<Cam
   return row;
 }
 
-/** Only a draft can be edited. Anything scheduled has promised something already. */
+/**
+ * A draft, or a paused campaign between runs, can be edited. A run that is
+ * expanding or sending is never changed under it: the edit waits for the next
+ * run, and `campaign.edited` records which run that is.
+ */
 export async function patchCampaign(
   tx: Tx,
   input: { [K in keyof CampaignInput]?: CampaignInput[K] | undefined } & { tenantId: string; id: string },
 ): Promise<CampaignRow | undefined> {
   const existing = await getCampaign(tx, input.id, true);
   if (!existing) return undefined;
-  if (existing.status !== 'draft') {
-    throw new CampaignError('not_draft', 409, `campaign is ${existing.status}; only a draft can be edited`);
+  const between = existing.status === 'paused' && !(await hasActiveRun(tx, existing.id));
+  if (existing.status !== 'draft' && !between) {
+    throw new CampaignError(
+      'not_editable',
+      409,
+      existing.status === 'paused'
+        ? 'a run is in progress; it can be edited once that run finishes'
+        : `campaign is ${existing.status}; only a draft, or a paused campaign between runs, can be edited`,
+    );
   }
 
   const merged: CampaignInput = {
@@ -183,7 +208,27 @@ export async function patchCampaign(
     timezone: input.timezone ?? existing.timezone,
     throttlePerMinute: input.throttlePerMinute ?? existing.throttle_per_minute,
   };
-  await validate(tx, input.tenantId, merged);
+  // A draft's start is checked as create checks it. A paused campaign's is
+  // checked only when this edit sets it: a recurrence's start is usually past.
+  await validate(tx, input.tenantId, merged, {
+    checkScheduledAt: existing.status === 'draft' || input.scheduledAt !== undefined,
+  });
+
+  const runsSoFar = await lastRunNo(tx, existing.id);
+  let nextRun = existing.next_run_at;
+  if (between) {
+    // Whatever run was waiting was queued for the old settings. Resume queues
+    // the next one for the new `next_run_at`, or finishes if there is none.
+    await cancelWaiting(tx, CAMPAIGN_RUN_JOB, runKey(existing.id, runsSoFar + 1));
+    nextRun = nextRunAt(
+      {
+        recurrence: merged.recurrence ?? null,
+        scheduled_at: merged.scheduledAt ?? null,
+        timezone: merged.timezone!,
+      },
+      { after: new Date(), runsSoFar },
+    );
+  }
 
   const [row] = await tx<CampaignRow[]>`
     update campaigns set
@@ -193,11 +238,58 @@ export async function patchCampaign(
       scheduled_at = ${merged.scheduledAt ?? null},
       recurrence = ${merged.recurrence ? tx.json(merged.recurrence as never) : null},
       timezone = ${merged.timezone!}, throttle_per_minute = ${merged.throttlePerMinute!},
+      next_run_at = ${nextRun},
       updated_at = now()
     where id = ${input.id}
     returning *
   `;
+
+  const changes = diff(existing, row!);
+  if (Object.keys(changes).length) {
+    await emit(tx, {
+      tenantId: input.tenantId,
+      type: 'campaign.edited',
+      subjectType: 'campaign',
+      subjectId: existing.id,
+      payload: { status: existing.status, appliesFromRun: runsSoFar + 1, changes },
+    });
+  }
   return row;
+}
+
+/** The editable fields, by their API name. */
+const EDITABLE = {
+  name: 'name',
+  audienceId: 'audience_id',
+  template: 'template',
+  channel: 'channel',
+  purpose: 'purpose',
+  variables: 'variables',
+  scheduledAt: 'scheduled_at',
+  recurrence: 'recurrence',
+  timezone: 'timezone',
+  throttlePerMinute: 'throttle_per_minute',
+} as const satisfies Record<string, keyof CampaignRow>;
+
+/** `{ field: { from, to } }` for each editable field that differs. */
+function diff(before: CampaignRow, after: CampaignRow): Record<string, { from: unknown; to: unknown }> {
+  const plain = (v: unknown) => (v instanceof Date ? v.toISOString() : v ?? null);
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const [field, column] of Object.entries(EDITABLE)) {
+    const from = plain(before[column]);
+    const to = plain(after[column]);
+    if (JSON.stringify(from) !== JSON.stringify(to)) changes[field] = { from, to };
+  }
+  return changes;
+}
+
+async function hasActiveRun(tx: Tx, campaignId: string): Promise<boolean> {
+  const [row] = await tx`
+    select 1 from campaign_runs
+    where campaign_id = ${campaignId} and status in ('expanding', 'sending')
+    limit 1
+  `;
+  return row !== undefined;
 }
 
 /**
@@ -228,6 +320,11 @@ export function nextRunAt(
   return next;
 }
 
+/** The singleton key of run `runNo`'s job. */
+function runKey(campaignId: string, runNo: number): string {
+  return `campaign:${campaignId}:${runNo}`;
+}
+
 /** Enqueue run `runNo` for `at`. Singleton-keyed, so asking twice queues once. */
 export async function enqueueRun(
   tx: Tx,
@@ -241,7 +338,7 @@ export async function enqueueRun(
     { tenantId: campaign.tenant_id, campaignId: campaign.id, runNo },
     {
       startAfterSeconds: Math.max(0, Math.ceil((at.getTime() - Date.now()) / 1000)),
-      singletonKey: `campaign:${campaign.id}:${runNo}`,
+      singletonKey: runKey(campaign.id, runNo),
       retryLimit: JOB_RETRY_LIMIT,
       retryBackoff: true,
     },
@@ -346,6 +443,72 @@ export async function scheduleCampaign(
     payload: { runNo: 1, runAt: at.toISOString() },
   });
   return row;
+}
+
+/**
+ * scheduled or paused → draft, while nothing has run. The waiting run job goes
+ * too: it is singleton-keyed, so left behind it would swallow the next
+ * schedule's job and fire at the old time.
+ */
+export async function unscheduleCampaign(
+  tx: Tx,
+  input: { tenantId: string; id: string },
+): Promise<CampaignRow | undefined> {
+  const campaign = await getCampaign(tx, input.id, true);
+  if (!campaign) return undefined;
+  if (campaign.status !== 'scheduled' && campaign.status !== 'paused') {
+    throw new CampaignError('invalid_state', 409, `campaign is ${campaign.status}; it cannot be unscheduled`);
+  }
+  if ((await lastRunNo(tx, campaign.id)) > 0) {
+    throw new CampaignError(
+      'already_started',
+      409,
+      'a run has started; pause it and edit between runs, or duplicate it',
+    );
+  }
+
+  await cancelWaiting(tx, CAMPAIGN_RUN_JOB, runKey(campaign.id, 1));
+  const [row] = await tx<CampaignRow[]>`
+    update campaigns set status = 'draft', next_run_at = null, updated_at = now()
+    where id = ${input.id}
+    returning *
+  `;
+  await emit(tx, {
+    tenantId: input.tenantId,
+    type: 'campaign.unscheduled',
+    subjectType: 'campaign',
+    subjectId: campaign.id,
+    payload: { from: campaign.status },
+  });
+  return row;
+}
+
+/**
+ * A new draft copied from any campaign, finished or not. It goes through
+ * create, so a template deleted since is refused rather than copied.
+ */
+export async function duplicateCampaign(
+  tx: Tx,
+  input: { tenantId: string; id: string; name?: string | undefined },
+): Promise<CampaignRow | undefined> {
+  const source = await getCampaign(tx, input.id);
+  if (!source) return undefined;
+
+  const future = source.scheduled_at && source.scheduled_at.getTime() > Date.now();
+  return createCampaign(tx, {
+    tenantId: input.tenantId,
+    duplicatedFrom: source.id,
+    name: input.name ?? `${source.name} (copy)`.slice(0, 200),
+    audienceId: source.audience_id,
+    template: source.template,
+    channel: source.channel,
+    purpose: source.purpose,
+    variables: source.variables,
+    scheduledAt: future ? source.scheduled_at : null,
+    recurrence: source.recurrence,
+    timezone: source.timezone,
+    throttlePerMinute: source.throttle_per_minute,
+  });
 }
 
 /** scheduled or running → paused. Pending recipients stay pending. */
