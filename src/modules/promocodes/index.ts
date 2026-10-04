@@ -52,6 +52,31 @@ export type PromocodeRow = {
   updated_at: Date;
 };
 
+export type Availability = 'paused' | 'ended' | 'scheduled' | 'expired' | 'exhausted' | 'live';
+
+/**
+ * Whether a code can be redeemed at all right now, in one word, for whoever
+ * has to read it at a glance. The first true answer wins, in the order
+ * `validate` checks the same things. `live` does not promise every cart
+ * validates: per-buyer limits, the minimum subtotal and rules still apply.
+ *
+ * `usage` is what the budget counts: reserved and settled redemptions.
+ */
+export function availability(
+  promo: Pick<PromocodeRow, 'status' | 'starts_at' | 'ends_at' | 'budget'>,
+  usage: { uses: number; spend: number },
+  now: Date = new Date(),
+): Availability {
+  if (promo.status === 'paused') return 'paused';
+  if (promo.status === 'ended') return 'ended';
+  if (promo.starts_at.getTime() > now.getTime()) return 'scheduled';
+  if (promo.ends_at && promo.ends_at.getTime() <= now.getTime()) return 'expired';
+  const { maxUses, maxSpend } = promo.budget;
+  if (maxUses !== undefined && usage.uses >= maxUses) return 'exhausted';
+  if (maxSpend !== undefined && usage.spend >= maxSpend) return 'exhausted';
+  return 'live';
+}
+
 export type Hold = { party: string; holdRef: string; amount: number };
 
 export type RedemptionRow = {

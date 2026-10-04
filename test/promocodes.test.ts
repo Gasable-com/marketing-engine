@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import {
+  availability,
   expireReservations,
   internalLedger,
   reconcile,
@@ -693,5 +694,37 @@ describe('product lists and lines', () => {
       ...json({ code: 'DIESEL10', buyerRef: 'buyer-1', cart: huge }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('availability', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  const promo = (fields: Partial<Parameters<typeof availability>[0]> = {}) => ({
+    status: 'active' as const,
+    starts_at: new Date('2026-09-01T00:00:00Z'),
+    ends_at: null,
+    budget: {},
+    ...fields,
+  });
+  const unused = { uses: 0, spend: 0 };
+
+  it('answers with the first reason in the order validate checks them', () => {
+    expect(availability(promo(), unused, now)).toBe('live');
+    const past = new Date('2026-09-30T00:00:00Z');
+
+    // Stored status first, even when the dates also say no.
+    expect(availability(promo({ status: 'paused', ends_at: past }), unused, now)).toBe('paused');
+    expect(availability(promo({ status: 'ended' }), unused, now)).toBe('ended');
+
+    expect(availability(promo({ starts_at: new Date('2026-10-02T00:00:00Z') }), unused, now)).toBe('scheduled');
+
+    // An expired code at its use limit is expired: the dates come before the budget.
+    const full = { uses: 1, spend: 100 };
+    expect(availability(promo({ ends_at: past, budget: { maxUses: 1 } }), full, now)).toBe('expired');
+    expect(availability(promo({ ends_at: now }), unused, now)).toBe('expired');
+
+    expect(availability(promo({ budget: { maxUses: 1 } }), full, now)).toBe('exhausted');
+    expect(availability(promo({ budget: { maxSpend: 100 } }), full, now)).toBe('exhausted');
+    expect(availability(promo({ budget: { maxUses: 2, maxSpend: 101 } }), full, now)).toBe('live');
   });
 });

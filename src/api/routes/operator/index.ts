@@ -8,6 +8,7 @@ import * as feeds from './feeds.js';
 import { jobs, oneJob, retryJob, schedules } from './jobs.js';
 import { metrics } from './metrics.js';
 import { overview } from './overview.js';
+import * as promoFeeds from './promocodes.js';
 import { listQuery, page, resolveWindow, windowQuery } from './shared.js';
 import {
   HEARTBEAT_MS,
@@ -235,6 +236,28 @@ operator.get('/internal/campaigns/:id/runs/:runId/recipients', async (c) => {
 
   const items = await campaignFeeds.recipients({ campaignId: id.data, runId: runId.data, ...q.data });
   return c.json(page(items, q.data.limit));
+});
+
+operator.get('/internal/promocodes', async (c) => {
+  const q = listQuery
+    .extend({
+      tenantId: z.string().uuid().optional(),
+      status: z.string().max(30).optional(),
+      code: z.string().min(1).max(100).optional(),
+    })
+    .safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
+
+  const items = await promoFeeds.promocodes(q.data);
+  return c.json(page(items, q.data.limit));
+});
+
+operator.get('/internal/promocodes/:id', async (c) => {
+  const id = z.string().uuid().safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+
+  const promocode = await promoFeeds.onePromocode(id.data);
+  return promocode ? c.json({ promocode }) : c.json({ error: 'not found' }, 404);
 });
 
 operator.get('/internal/webhook-deliveries', async (c) => {

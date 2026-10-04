@@ -169,7 +169,7 @@ export async function redemptions(input: {
   const sql = db();
   return sql<Record<string, unknown>[]>`
     select r.id::text as id, r.tenant_id::text as "tenantId", t.name as "tenantName",
-           p.code, r.buyer_ref as "buyerRef", r.order_ref as "orderRef",
+           r.promocode_id::text as "promocodeId", p.code, r.buyer_ref as "buyerRef", r.order_ref as "orderRef",
            r.currency, r.discount_amount::text as "discountAmount", r.status,
            r.holds, r.reserved_at as "reservedAt", r.settled_at as "settledAt",
            r.released_at as "releasedAt", r.release_reason as "releaseReason",
