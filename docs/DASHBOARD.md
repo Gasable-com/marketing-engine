@@ -123,6 +123,26 @@ for the selected run, **`GET /internal/campaigns/:id/runs/:runId/recipients?stat
 who got it, who did not, and why. The overview's `campaigns` section is the
 card on the front page.
 
+### 8. Promocodes
+
+**`GET /internal/promocodes?tenantId&status&code`** (`code` is a
+case-insensitive prefix) and **`GET /internal/promocodes/:id`** for one code.
+
+Each row has every field of the code — discount, rules, budget, funders,
+validity, status — plus `usage` and `availability`, both computed by the
+engine. `usage.uses` and `usage.spend` are the reserved and settled
+redemptions, the same numbers checkout's budget check reads, so the screen and
+checkout cannot disagree. `usage` also has the count and amount per redemption
+status, distinct buyers, what is left of `maxUses` and `maxSpend` (`null` when
+unset) and when the code was last redeemed. `availability` is one word:
+`paused`, `ended`, `scheduled`, `expired`, `exhausted` or `live`. `live` does
+not mean every cart validates: per-buyer limits, the minimum subtotal and rules
+still apply.
+
+A code's redemptions come from **`GET /internal/redemptions?promocodeId=`**;
+pass `since` as the code's `createdAt`, or the feed's 30-day default hides older
+ones. Each redemption row carries `promocodeId`.
+
 ## Charts
 
 **`GET /internal/metrics?series=&bucket=&window=&tenantId=&groupBy=`**
@@ -144,6 +164,7 @@ need percentiles or retention, read the event log into something that is.
 | Per-tenant | on demand |
 | Message detail | on demand |
 | Deliveries | on demand |
+| Promocodes | on demand |
 
 ## What is not here
 

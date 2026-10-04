@@ -978,13 +978,31 @@ secret) and counts over 24h, 7d and 30d.
 | `GET /internal/events/:id` | one event with its full payload |
 | `GET /internal/messages` | `tenantId`, `status`, `channel`, `provider`, `companyId`, `address` |
 | `GET /internal/messages/:id` | the message, its events, delivery reports with raw provider bodies, fallback children and parent |
-| `GET /internal/redemptions` | `tenantId`, `status`, `promocodeId` |
+| `GET /internal/redemptions` | `tenantId`, `status`, `promocodeId`; each row carries `promocodeId` |
+| `GET /internal/promocodes` | `tenantId`, `status`, `code` (case-insensitive prefix); each row is the code with `tenantName`, `usage` and `availability`, below |
+| `GET /internal/promocodes/:id` | `{ promocode }`, the same row |
 | `GET /internal/invites` | `tenantId`, `status` |
 | `GET /internal/companies` | `q` (trigram on the normalised name), `country`, `onPlatform` |
 | `GET /internal/webhook-deliveries` | `status`, `tenantId`, `endpointId` |
 | `GET /internal/campaigns` | `tenantId`, `status`; each row has `tenantName`, `audienceName`, `nextRunAt` and `lastRun` with its counts |
 | `GET /internal/campaigns/:id` | `{ campaign, runs }`, every run with its counts |
 | `GET /internal/campaigns/:id/runs/:runId/recipients` | `state`; each recipient with its message's channel and status. Ordered by contact id |
+
+A promocode row's `usage`, all amounts in minor units:
+
+```json
+{ "uses": 2, "spend": 10000,
+  "reserved": { "count": 1, "amount": 5000 },
+  "settled": { "count": 1, "amount": 5000 },
+  "released": { "count": 1, "amount": 5000 },
+  "buyers": 2, "remainingUses": 1, "remainingSpend": 10000,
+  "lastRedeemedAt": "…" }
+```
+
+`uses` and `spend` count reserved and settled redemptions, as the budget check
+does. `remainingUses` and `remainingSpend` are `null` when that budget is
+unset. `availability` is the first of `paused`, `ended`, `scheduled`,
+`expired`, `exhausted`, `live` that holds.
 
 Each message row carries a `timeline` of its own events in order, so a list
 answers "what happened to this?" without opening it.
