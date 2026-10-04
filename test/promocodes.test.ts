@@ -478,3 +478,220 @@ describe('tenant isolation', () => {
     expect(ledger).toHaveLength(0);
   });
 });
+
+describe('product lists and lines', () => {
+  const DIESEL = '11111111-1111-4111-8111-111111111111';
+  const GAS = '22222222-2222-4222-8222-222222222222';
+
+  /** Each line as corporate sends it (D13): one unit at the line's value. */
+  const mixedCart = {
+    currency: 'SAR',
+    subtotal: 120000,
+    items: [
+      { sku: GAS, qty: 1, unitPrice: 20000 },
+      { sku: DIESEL, qty: 1, unitPrice: 100000 },
+    ],
+  };
+
+  type Line = { index: number; sku: string | null; amount: number };
+
+  async function createLimited(productIds: string[], code = 'DIESEL10') {
+    return createCode({
+      code,
+      discount: { type: 'percent', value: 1000, productIds },
+    });
+  }
+
+  async function hold(orderRef: string, key?: string, code = 'DIESEL10', body = mixedCart) {
+    const res = await request('/v1/redemptions', {
+      method: 'POST',
+      ...paid({ code, buyerRef: 'buyer-1', cart: body, orderRef }, key),
+    });
+    return {
+      status: res.status,
+      replayed: res.headers.get('Idempotency-Replayed'),
+      body: (await res.json()) as { redemption?: Redemption; lines?: Line[]; reason?: string },
+    };
+  }
+
+  it('saves the list in the discount, and refuses ids that are not uuids or too many', async () => {
+    const promo = await createLimited([DIESEL]);
+    const fetched = await request(`/v1/promocodes/${promo.id}`);
+    const { promocode } = (await fetched.json()) as {
+      promocode: { discount: Record<string, unknown> };
+    };
+    expect(promocode.discount).toEqual({ type: 'percent', value: 1000, productIds: [DIESEL] });
+
+    for (const productIds of [['diesel'], Array.from({ length: 501 }, () => DIESEL)]) {
+      const res = await request('/v1/promocodes', {
+        method: 'POST',
+        ...json({
+          code: 'BAD',
+          currency: 'SAR',
+          discount: { type: 'percent', value: 1000, productIds },
+          funders: SPLIT_60_40,
+        }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('changes the list on update and keeps the rest of the discount', async () => {
+    const promo = await createCode({
+      code: 'DIESEL10',
+      discount: { type: 'percent', value: 1000, maxDiscount: 5000 },
+    });
+
+    const patch = (body: unknown) =>
+      request(`/v1/promocodes/${promo.id}`, { method: 'PATCH', ...json(body) });
+    const patched = async (body: unknown) => {
+      const res = await patch(body);
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { promocode: unknown }).promocode;
+    };
+
+    expect(await patched({ discount: { productIds: [GAS] } })).toMatchObject({
+      status: 'active',
+      discount: { type: 'percent', value: 1000, maxDiscount: 5000, productIds: [GAS] },
+    });
+
+    // Status on its own still works, and leaves the list alone.
+    expect(await patched({ status: 'paused' })).toMatchObject({
+      status: 'paused',
+      discount: { productIds: [GAS] },
+    });
+
+    // An empty list lifts the limit.
+    expect(await patched({ status: 'active', discount: { productIds: [] } })).toMatchObject({
+      status: 'active',
+      discount: { productIds: [] },
+    });
+
+    expect((await patch({})).status).toBe(400);
+    expect((await patch({ discount: { productIds: ['nope'] } })).status).toBe(400);
+    // Only the list can change, never the amount.
+    expect((await patch({ discount: { productIds: [GAS], value: 9000 } })).status).toBe(200);
+    const [row] = await db()<{ discount: { value: number } }[]>`select discount from promocodes`;
+    expect(row!.discount.value).toBe(1000);
+  });
+
+  it('validates to one line per item, discounting only the listed products', async () => {
+    await createLimited([DIESEL]);
+    const res = await request('/v1/promocodes/validate', {
+      method: 'POST',
+      ...json({ code: 'DIESEL10', buyerRef: 'buyer-1', cart: mixedCart }),
+    });
+    expect(await res.json()).toMatchObject({
+      valid: true,
+      discountAmount: 10000,
+      lines: [
+        { index: 0, sku: GAS, amount: 0 },
+        { index: 1, sku: DIESEL, amount: 10000 },
+      ],
+    });
+  });
+
+  it('says no_eligible_items when nothing in the cart is on the list', async () => {
+    await createLimited([DIESEL]);
+    const gasOnly = { currency: 'SAR', subtotal: 20000, items: [mixedCart.items[0]!] };
+
+    const res = await request('/v1/promocodes/validate', {
+      method: 'POST',
+      ...json({ code: 'DIESEL10', buyerRef: 'buyer-1', cart: gasOnly }),
+    });
+    expect(await res.json()).toEqual({ valid: false, reason: 'no_eligible_items' });
+
+    const held = await hold('order-gas', undefined, 'DIESEL10', gasOnly);
+    expect(held.status).toBe(200);
+    expect(held.body).toEqual({ valid: false, reason: 'no_eligible_items' });
+    expect(await db()`select id from redemptions`).toHaveLength(0);
+  });
+
+  it('returns lines for a code without a list too', async () => {
+    await createCode();
+    const res = await request('/v1/promocodes/validate', {
+      method: 'POST',
+      ...json({ code: 'SAVE10', buyerRef: 'buyer-1', cart: mixedCart }),
+    });
+    // 10% of 120000 capped at 5000, shared 1:5 by value: 833 and 4166, and
+    // the halala left over goes on the first line.
+    expect(await res.json()).toMatchObject({
+      valid: true,
+      discountAmount: 5000,
+      lines: [
+        { index: 0, sku: GAS, amount: 834 },
+        { index: 1, sku: DIESEL, amount: 4166 },
+      ],
+    });
+  });
+
+  it('holds with the same lines, and replays them on retry', async () => {
+    await createLimited([DIESEL]);
+    const expected = [
+      { index: 0, sku: GAS, amount: 0 },
+      { index: 1, sku: DIESEL, amount: 10000 },
+    ];
+
+    const first = await hold('order-1', 'place-1');
+    expect(first.status).toBe(201);
+    expect(first.body.lines).toEqual(expected);
+    expect(first.body.redemption).toMatchObject({ status: 'reserved', discount_amount: '10000' });
+
+    // Same Idempotency-Key: the stored response, byte for byte.
+    const again = await hold('order-1', 'place-1');
+    expect(again.status).toBe(201);
+    expect(again.replayed).toBe('true');
+    expect(again.body).toEqual(first.body);
+
+    // A new key for the same order: the same redemption and the lines that
+    // were held, even after the code's list and the cart have changed.
+    const [promo] = await db()<{ id: string }[]>`select id from promocodes`;
+    await request(`/v1/promocodes/${promo!.id}`, {
+      method: 'PATCH',
+      ...json({ discount: { productIds: [GAS] } }),
+    });
+    const changedCart = { ...mixedCart, items: [mixedCart.items[0]!] };
+    const newKey = await hold('order-1', 'place-2', 'DIESEL10', changedCart);
+    expect(newKey.status).toBe(201);
+    expect(newKey.replayed).toBeNull();
+    expect(newKey.body.redemption!.id).toBe(first.body.redemption!.id);
+    expect(newKey.body.lines).toEqual(expected);
+
+    expect(await db()`select id from redemptions`).toHaveLength(1);
+
+    const [event] = await withTenant(
+      TENANT_A,
+      (tx) => tx<{ payload: { lines: Line[] } }[]>`
+        select payload from events where type = 'promo.reserved'
+      `,
+    );
+    expect(event!.payload.lines).toEqual(expected);
+  });
+
+  it('splits a hold from before product lists over every item on replay', async () => {
+    await createCode();
+    const first = await hold('order-old', 'old-1', 'SAVE10');
+    expect(first.status).toBe(201);
+    // Such a hold recorded no lines.
+    await db()`update events set payload = payload - 'lines' where type = 'promo.reserved'`;
+
+    const again = await hold('order-old', 'old-2', 'SAVE10');
+    expect(again.body.redemption!.id).toBe(first.body.redemption!.id);
+    expect(again.body.lines).toEqual(first.body.lines);
+    expect(again.body.lines!.reduce((sum, l) => sum + l.amount, 0)).toBe(5000);
+  });
+
+  it('refuses a cart whose items add up past a safe whole number', async () => {
+    await createLimited([DIESEL]);
+    const huge = {
+      currency: 'SAR',
+      subtotal: 1000,
+      items: [{ sku: DIESEL, qty: 1_000_000, unitPrice: 9_000_000_000_000 }],
+    };
+    const res = await request('/v1/promocodes/validate', {
+      method: 'POST',
+      ...json({ code: 'DIESEL10', buyerRef: 'buyer-1', cart: huge }),
+    });
+    expect(res.status).toBe(400);
+  });
+});

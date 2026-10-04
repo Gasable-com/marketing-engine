@@ -8,9 +8,11 @@ import {
   fundersAreValid,
   proportion,
   split,
+  splitLines,
   type Cart,
   type Discount,
   type Funder,
+  type Line,
 } from './money.js';
 
 export * from './money.js';
@@ -71,7 +73,7 @@ export type RedemptionRow = {
 };
 
 export type ValidateResult =
-  | { valid: true; discountAmount: number; promocodeId: string }
+  | { valid: true; discountAmount: number; promocodeId: string; lines: Line[] }
   | { valid: false; reason: string; rule?: { id: string; name: string } };
 
 export async function create(
@@ -213,7 +215,7 @@ export async function validate(
     return { valid: false, reason: 'budget_spend' };
   }
 
-  return { valid: true, discountAmount, promocodeId: promo.id };
+  return { valid: true, discountAmount, promocodeId: promo.id, lines: computed.lines };
 }
 
 /**
@@ -254,7 +256,7 @@ async function usageOf(
 }
 
 export type ReserveResult =
-  | { reserved: true; redemption: RedemptionRow }
+  | { reserved: true; redemption: RedemptionRow; lines: Line[] }
   | { reserved: false; reason: string; rule?: { id: string; name: string } };
 
 /**
@@ -271,7 +273,22 @@ export async function reserve(
     select * from redemptions
     where tenant_id = ${input.tenantId} and order_ref = ${input.orderRef}
   `;
-  if (existing) return { reserved: true, redemption: existing };
+  if (existing) {
+    // The lines are the ones held, read back from the event that recorded
+    // them, so a later change to the code or the cart cannot alter them. A
+    // hold from before product lists has none recorded; its code covered
+    // every item, so the held amount is split over all of them.
+    const [held] = await tx<{ lines: Line[] | null }[]>`
+      select payload->'lines' as lines from events
+      where tenant_id = ${input.tenantId} and type = 'promo.reserved'
+        and subject_type = 'redemption' and subject_id = ${existing.id}
+    `;
+    return {
+      reserved: true,
+      redemption: existing,
+      lines: held?.lines ?? splitLines(Number(existing.discount_amount), input.cart.items),
+    };
+  }
 
   const verdict = await validate(tx, input, { lock: true });
   if (!verdict.valid) {
@@ -327,10 +344,11 @@ export async function reserve(
       orderRef: input.orderRef,
       discountAmount: verdict.discountAmount,
       holds,
+      lines: verdict.lines,
     },
   });
 
-  return { reserved: true, redemption: withHolds! };
+  return { reserved: true, redemption: withHolds!, lines: verdict.lines };
 }
 
 /**

@@ -29,8 +29,18 @@ const cart = z.object({
       }),
     )
     .max(500)
-    .default([]),
+    .default([])
+    // Line values are summed and split, so their total has to stay a whole
+    // number of minor units too.
+    .refine(
+      (items) =>
+        items.reduce((sum, i) => sum + i.qty * i.unitPrice, 0) <= Number.MAX_SAFE_INTEGER,
+      { message: 'the items add up to more than a whole number of minor units can hold' },
+    ),
 });
+
+/** The products a code is limited to, matched against each cart item's `sku`. Empty: all. */
+const productIds = z.array(z.string().uuid()).max(500);
 
 const createBody = z.object({
   code: z.string().min(1).max(60),
@@ -41,6 +51,7 @@ const createBody = z.object({
     value: minorUnits,
     maxDiscount: minorUnits.optional(),
     minSubtotal: minorUnits.optional(),
+    productIds: productIds.optional(),
   }),
   budget: z
     .object({
@@ -124,14 +135,26 @@ promocodes.patch('/v1/promocodes/:id', async (c) => {
   if (!id.success) return c.json({ error: 'not found' }, 404);
 
   const parsed = z
-    .object({ status: z.enum(['active', 'paused', 'ended']) })
+    .object({
+      status: z.enum(['active', 'paused', 'ended']).optional(),
+      discount: z.object({ productIds }).optional(),
+    })
+    .refine((body) => body.status !== undefined || body.discount !== undefined, {
+      message: 'nothing to change: send status or discount.productIds',
+    })
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+  const { status, discount } = parsed.data;
 
+  // Only the product list of a discount can change; its type and amounts stay
+  // what they were when the code was handed out.
   const [row] = await withTenant(
     c.get('tenantId'),
     (tx) => tx<PromocodeRow[]>`
-      update promocodes set status = ${parsed.data.status}, updated_at = now()
+      update promocodes set
+        ${status ? tx`status = ${status},` : tx``}
+        ${discount ? tx`discount = discount || ${tx.json(discount)},` : tx``}
+        updated_at = now()
       where id = ${id.data} returning *
     `,
   );
@@ -162,7 +185,7 @@ promocodes.post('/v1/redemptions', async (c) => {
   const result = await withTenant(tenantId, (tx) => reserve(tx, { tenantId, ...parsed.data }));
 
   return result.reserved
-    ? c.json({ redemption: result.redemption }, 201)
+    ? c.json({ redemption: result.redemption, lines: result.lines }, 201)
     : c.json({ valid: false, reason: result.reason, ...(result.rule ? { rule: result.rule } : {}) });
 });
 
