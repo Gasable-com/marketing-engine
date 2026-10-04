@@ -1,4 +1,4 @@
-# Brief 14 — Promocodes in the operator view
+# Brief 15 — Promocodes in the operator view
 
 Read `CLAUDE.md` and `docs/ARCHITECTURE.md` first. Today an operator can see redemptions, each one use of a code, but not the codes themselves: discount, budget, funders, rules, validity and how much of the budget is gone live only behind a tenant's own `GET /v1/promocodes`. This brief adds the read side for codes and a dashboard view over it. It adds no promocode behaviour.
 
@@ -29,7 +29,7 @@ Each row gains `promocodeId`, so a redemption links to its code.
 ## Part B — the dashboard
 
 - **`#/promocodes`**, in the nav after Campaigns: the list, with filters for tenant id, status and code. Columns: code, tenant, discount, availability, uses (of `maxUses`), spend (of `maxSpend`), valid from–to, last redeemed. A row opens the detail.
-- **`#/promocodes/:id`**: cards for the code (tenant link, currency, discount, stored status and availability, validity, created, updated), budget and usage (every `usage` field and the three budget limits), funders (party and share), and the rules document as JSON, `none` when null. Below them, the code's redemptions from the feed with `promocodeId` and `since` set to the code's `createdAt`, so the feed's default 30-day window does not hide older ones; paged like every list.
+- **`#/promocodes/:id`**: cards for the code (tenant link, currency, discount, the products it is limited to from brief 14's `discount.productIds` or `all products`, stored status and availability, validity, created, updated), budget and usage (every `usage` field and the three budget limits), funders (party and share), and the rules document as JSON, `none` when null. Below them, the code's redemptions from the feed with `promocodeId` and `since` set to the code's `createdAt`, so the feed's default 30-day window does not hide older ones; paged like every list.
 - **Tenant detail**: a `promocodes` tab next to `redemptions`. In the redemptions tab, a redemption's code links to `#/promocodes/:promocodeId`.
 - `format.ts` gains `discount(d, currency)`: `10%` for a percent of 1000 basis points, money for a fixed one, with `up to` and `min subtotal` when set. Formatting only.
 
@@ -46,7 +46,7 @@ Unit (`test/promocodes.test.ts`): `availability` order, e.g. a paused code past 
 Dashboard (`dashboard/test/`): both views render from a fixture, and their empty and error states; `discount()` formats percent, fixed, `maxDiscount` and `minSubtotal`.
 
 ## Done when
-CI passes; `docs/API.md` and `docs/DASHBOARD.md` describe the two routes and the field; row 14 in the roadmap in `docs/ARCHITECTURE.md`.
+CI passes; `docs/API.md` and `docs/DASHBOARD.md` describe the two routes and the field; row 15 in the roadmap in `docs/ARCHITECTURE.md`.
 
 ## Do not
 - Add any write: no pause, edit or create from the dashboard. Clients change codes through `/v1`.

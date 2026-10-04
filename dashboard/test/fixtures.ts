@@ -222,7 +222,7 @@ export const promocodes: PromocodeRow[] = [
     tenantName: 'Acme Supplies',
     code: 'SAVE10',
     currency: 'SAR',
-    discount: { type: 'percent', value: 1000, maxDiscount: 5000 },
+    discount: { type: 'percent', value: 1000, maxDiscount: 5000, productIds: ['99999999-9999-9999-9999-999999999999'] },
     rules: { '>=': [{ var: 'cart.subtotal' }, 100000] },
     budget: { maxUses: 100, maxSpend: 500000, perBuyerMaxUses: 1 },
     funders: [

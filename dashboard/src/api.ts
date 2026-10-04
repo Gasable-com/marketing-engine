@@ -204,7 +204,14 @@ export type PromocodeRow = {
   code: string;
   currency: string;
   /** A percent `value` is basis points: 1000 is 10%. Amounts are minor units. */
-  discount: { type: 'percent' | 'fixed'; value: number; maxDiscount?: number; minSubtotal?: number };
+  discount: {
+    type: 'percent' | 'fixed';
+    value: number;
+    maxDiscount?: number;
+    minSubtotal?: number;
+    /** Limits the code to these products, matched on each cart item's sku. Absent or empty: all. */
+    productIds?: string[];
+  };
   rules: unknown;
   budget: { maxSpend?: number; maxUses?: number; perBuyerMaxUses?: number };
   funders: { party: string; share: number }[];

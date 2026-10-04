@@ -119,15 +119,18 @@ describe('views render', () => {
     expect(table).toContain('Acme Supplies');
     expect(table).toContain('10%');
     expect(table).toContain('expired');
+    expect(table).toMatch(/only 1(<!-- -->)?\s*(<!-- -->)?product</);
 
     const detail = render(<PromocodeDetail p={fixtures.promocodes[0]!} loadedAt={null} />);
     expect(detail).toContain('live');
     expect(detail).toContain('60%');
     expect(detail).toContain('cart.subtotal');
+    expect(detail).toContain('99999999-9999-9999-9999-999999999999');
     // A code with no budget and no rules says so rather than showing zeros.
     const open = render(<PromocodeDetail p={fixtures.promocodes[1]!} loadedAt={null} />);
     expect(open).toContain('no limit');
     expect(open).toContain('none');
+    expect(open).toContain('all products');
   });
 
   it('metrics', async () => {

@@ -105,7 +105,15 @@ export function PromocodeTable({ rows, showTenant }: { rows: PromocodeRow[]; sho
           >
             <td class="mono">{p.code}</td>
             {showTenant ? <td>{p.tenantName}</td> : null}
-            <td>{discount(p.discount, p.currency)}</td>
+            <td>
+              {discount(p.discount, p.currency)}
+              {p.discount.productIds?.length ? (
+                <div class="muted">
+                  only {count(p.discount.productIds.length)}{' '}
+                  {p.discount.productIds.length === 1 ? 'product' : 'products'}
+                </div>
+              ) : null}
+            </td>
             <td>
               <Badge value={p.availability} />
             </td>
@@ -166,6 +174,17 @@ export function PromocodeDetail({ p, loadedAt }: { p: PromocodeRow; loadedAt: Da
                 <a href={href(`/tenants/${p.tenantId}`)}>{p.tenantName}</a>
               </Row>
               <Row k="discount">{discount(p.discount, p.currency)}</Row>
+              <Row k="products">
+                {p.discount.productIds?.length ? (
+                  p.discount.productIds.map((id) => (
+                    <div key={id} class="mono wrap-any">
+                      {id}
+                    </div>
+                  ))
+                ) : (
+                  <span class="muted">all products</span>
+                )}
+              </Row>
               <Row k="currency">{p.currency}</Row>
               <Row k="status">
                 <Badge value={p.status} />
