@@ -361,7 +361,8 @@ and the sending rules apply to it like anything else.
 {
   "code": "SAVE10",
   "currency": "SAR",
-  "discount": { "type": "percent", "value": 1000, "maxDiscount": 5000, "minSubtotal": 20000 },
+  "discount": { "type": "percent", "value": 1000, "maxDiscount": 5000, "minSubtotal": 20000,
+                "productIds": ["<uuid>", "…"] },
   "budget": { "maxSpend": 500000, "maxUses": 100, "perBuyerMaxUses": 1 },
   "funders": [{ "party": "platform", "share": 0.6 }, { "party": "tenant:<uuid>", "share": 0.4 }],
   "rules": { ">=": [{ "var": "cart.subtotal" }, 100000] },
@@ -372,13 +373,21 @@ and the sending rules apply to it like anything else.
 Funder shares sum to 1. A discount that does not divide evenly puts the
 remainder on the first funder, so the parts always sum exactly.
 
+`productIds` (optional, up to 500 uuids) limits the code to those products,
+matched against each cart item's `sku`. With a list, the discount, its
+`maxDiscount` cap and its `minSubtotal` all work on the listed lines only, each
+worth `qty × unitPrice`. Absent or empty, the code covers every item and reads
+`cart.subtotal`, as it always has.
+
 → `201 { "promocode": … }`. Emits `promo.created`.
 
 Errors: `400` `invalid_currency` / `invalid_funders` / `invalid_discount`.
 
 ### `GET /v1/promocodes?status=` · `GET /v1/promocodes/:id` · `PATCH /v1/promocodes/:id`
 
-List carries `usage: { uses, spend }`. `PATCH` takes `{ "status": "active" | "paused" | "ended" }`.
+List carries `usage: { uses, spend }`. `PATCH` takes `status`
+(`"active" | "paused" | "ended"`), `discount.productIds`, or both. Only the
+product list of a discount can change; an empty list lifts the limit.
 
 ### `POST /v1/promocodes/validate` — tenant JWT
 
@@ -388,10 +397,18 @@ List carries `usage: { uses, spend }`. `PATCH` takes `{ "status": "active" | "pa
             "items": [{ "sku": "lpg", "qty": 1, "unitPrice": 80000 }] } }
 ```
 
-→ `200 { "valid": true, "discountAmount": 5000, "promocodeId": … }` or
+→ `200 { "valid": true, "discountAmount": 5000, "promocodeId": …, "lines": [{ "index": 0, "sku": "lpg", "amount": 5000 }] }` or
 `200 { "valid": false, "reason": … }`. Reasons, first true one wins:
-`not_found`, `not_active`, `currency_mismatch`, `min_subtotal`, `rule`,
-`budget_uses`, `budget_buyer`, `budget_spend`. Writes nothing.
+`not_found`, `not_active`, `currency_mismatch`, `no_eligible_items`,
+`min_subtotal`, `rule`, `budget_uses`, `budget_buyer`, `budget_spend`.
+Writes nothing.
+
+`lines` has one entry per cart item, in the order sent, with `amount: 0` for an
+item the code does not cover. The discount is split across the covered items by
+value; each share is rounded down and the remainder goes on the first covered
+item (moving on to the next only if it would take that item below zero), so the
+amounts always sum to exactly `discountAmount`. `no_eligible_items`: the code
+has a product list and nothing in the cart is on it.
 
 ### `POST /v1/redemptions` — tenant JWT, **`Idempotency-Key` required**
 
@@ -400,8 +417,13 @@ re-checks everything, so two checkouts racing for the last use cannot both pass.
 `orderRef` is the natural key: the same order twice returns the same redemption
 and one set of holds.
 
-→ `201 { "redemption": … }` or `200 { "valid": false, "reason": … }`.
-Emits `promo.reserved`.
+→ `201 { "redemption": …, "lines": [ … ] }` or `200 { "valid": false, "reason": … }`.
+`lines` is as on validate. A retry with the same `Idempotency-Key` replays the
+stored response, lines included. The same `orderRef` under a new key returns
+the same redemption with the lines that were held, read back from its
+`promo.reserved` event, whatever cart that call sent. Emits `promo.reserved`,
+with the lines in its payload. A cart whose items add up to more than
+`Number.MAX_SAFE_INTEGER` is a `400`, here and on validate.
 
 ### `POST /v1/redemptions/:id/settle` — tenant JWT, **`Idempotency-Key` required**
 

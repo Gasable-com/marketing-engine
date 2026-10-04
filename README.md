@@ -366,6 +366,11 @@ never riyals and never a float. **A percent discount's `value` is basis
 points**: `1000` is 10%. A computed discount is rounded down, capped by
 `maxDiscount` and by the cart itself.
 
+A code can be limited to products with `discount.productIds`, matched against
+each cart item's `sku`. Then the discount, its cap and `minSubtotal` work on
+those lines only. Validate and reserve both return `lines`: what comes off each
+cart item, in the order sent, summing exactly to the discount.
+
 The engine never moves money. It records who owes what against a `Ledger`, and
 settlement between the parties is somebody else's job. `LEDGER=internal` (the
 default) keeps that in a table here; `finance-engine` is a stub that fails
@@ -377,8 +382,9 @@ Four calls, in this order:
 
 1. **Validate at the cart.** `POST /v1/promocodes/validate` while the buyer is
    still typing. An unusable code is a 200 with a `reason`, not an error —
-   `not_found`, `not_active`, `currency_mismatch`, `min_subtotal`, `rule`,
-   `budget_uses`, `budget_buyer` or `budget_spend`, whichever is true first.
+   `not_found`, `not_active`, `currency_mismatch`, `no_eligible_items`,
+   `min_subtotal`, `rule`, `budget_uses`, `budget_buyer` or `budget_spend`,
+   whichever is true first.
    Nothing is written.
 2. **Reserve at order placed.** `POST /v1/redemptions` with an `orderRef`. This
    locks the code, re-checks everything, writes a `reserved` redemption and
