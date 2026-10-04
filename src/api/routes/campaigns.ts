@@ -8,6 +8,7 @@ import {
   createAudience,
   createCampaign,
   deleteAudience,
+  duplicateCampaign,
   getAudience,
   getCampaign,
   getContact,
@@ -27,6 +28,7 @@ import {
   removeMember,
   resumeCampaign,
   scheduleCampaign,
+  unscheduleCampaign,
   upsertContact,
   type AudienceRow,
   type CampaignRow,
@@ -358,6 +360,7 @@ campaigns.patch('/v1/campaigns/:id', async (c) => {
 
 const actions = {
   schedule: scheduleCampaign,
+  unschedule: unscheduleCampaign,
   pause: pauseCampaign,
   resume: resumeCampaign,
   cancel: cancelCampaign,
@@ -373,6 +376,22 @@ for (const [action, fn] of Object.entries(actions)) {
     return row ? c.json({ campaign: serialiseCampaign(row, null) }) : c.json({ error: 'not found' }, 404);
   });
 }
+
+/** A new draft copied from any campaign. `name` defaults to "<name> (copy)". */
+campaigns.post('/v1/campaigns/:id/duplicate', async (c) => {
+  const id = uuid.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+  const parsed = z
+    .object({ name: z.string().min(1).max(200).optional() })
+    .safeParse((await c.req.json().catch(() => null)) ?? {});
+  if (!parsed.success) return c.json(invalid(parsed.error.issues), 400);
+
+  const tenantId = c.get('tenantId');
+  const row = await withTenant(tenantId, (tx) =>
+    duplicateCampaign(tx, { tenantId, id: id.data, name: parsed.data.name }),
+  );
+  return row ? c.json({ campaign: serialiseCampaign(row, null) }, 201) : c.json({ error: 'not found' }, 404);
+});
 
 campaigns.get('/v1/campaigns/:id/runs', async (c) => {
   const id = uuid.safeParse(c.req.param('id'));
