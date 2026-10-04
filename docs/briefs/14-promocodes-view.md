@@ -30,7 +30,7 @@ Each row gains `promocodeId`, so a redemption links to its code.
 
 - **`#/promocodes`**, in the nav after Campaigns: the list, with filters for tenant id, status and code. Columns: code, tenant, discount, availability, uses (of `maxUses`), spend (of `maxSpend`), valid from–to, last redeemed. A row opens the detail.
 - **`#/promocodes/:id`**: cards for the code (tenant link, currency, discount, stored status and availability, validity, created, updated), budget and usage (every `usage` field and the three budget limits), funders (party and share), and the rules document as JSON, `none` when null. Below them, the code's redemptions from the feed with `promocodeId` and `since` set to the code's `createdAt`, so the feed's default 30-day window does not hide older ones; paged like every list.
-- **Tenant detail**: a `promocodes` tab next to `redemptions`. In the redemptions tab, and on the promocode detail, a redemption's code links to `#/promocodes/:promocodeId`.
+- **Tenant detail**: a `promocodes` tab next to `redemptions`. In the redemptions tab, a redemption's code links to `#/promocodes/:promocodeId`.
 - `format.ts` gains `discount(d, currency)`: `10%` for a percent of 1000 basis points, money for a fixed one, with `up to` and `min subtotal` when set. Formatting only.
 
 ## Tests

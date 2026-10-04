@@ -17,6 +17,24 @@ export function money(minorUnits: string | number, currency: string): string {
   }
 }
 
+/**
+ * A discount as written on a code: "10%" for 1000 basis points, money for a
+ * fixed amount, then its cap and minimum when it has them.
+ */
+export function discount(
+  d: { type: 'percent' | 'fixed'; value: number; maxDiscount?: number; minSubtotal?: number },
+  currency: string,
+): string {
+  const base =
+    d.type === 'percent'
+      ? `${(d.value / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`
+      : money(d.value, currency);
+  const parts = [base];
+  if (d.maxDiscount !== undefined) parts.push(`up to ${money(d.maxDiscount, currency)}`);
+  if (d.minSubtotal !== undefined) parts.push(`min subtotal ${money(d.minSubtotal, currency)}`);
+  return parts.join(', ');
+}
+
 const UNITS: [limit: number, seconds: number, name: Intl.RelativeTimeFormatUnit][] = [
   [60, 1, 'second'],
   [3600, 60, 'minute'],
