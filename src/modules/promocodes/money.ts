@@ -10,6 +10,12 @@ export type Discount = {
   value: number;
   maxDiscount?: number | undefined;
   minSubtotal?: number | undefined;
+  /**
+   * Limits the code to these products, matched against each item's `sku`.
+   * Absent or empty: every item, and the code reads `cart.subtotal` as it
+   * always has.
+   */
+  productIds?: string[] | undefined;
 };
 
 export type Cart = {
@@ -25,9 +31,12 @@ export type Cart = {
 
 export type Funder = { party: string; share: number };
 
+/** One entry per cart item, in cart order: what this code takes off that line. */
+export type Line = { index: number; sku: string | null; amount: number };
+
 export type ComputeResult =
-  | { ok: true; amount: number }
-  | { ok: false; reason: 'currency_mismatch' | 'min_subtotal' };
+  | { ok: true; amount: number; lines: Line[] }
+  | { ok: false; reason: 'currency_mismatch' | 'min_subtotal' | 'no_eligible_items' };
 
 const BASIS_POINTS = 10_000;
 
@@ -37,13 +46,24 @@ export function compute(
   cart: Cart,
 ): ComputeResult {
   if (promo.currency !== cart.currency) return { ok: false, reason: 'currency_mismatch' };
-  if (promo.discount.minSubtotal && cart.subtotal < promo.discount.minSubtotal) {
+
+  const limited = (promo.discount.productIds?.length ?? 0) > 0;
+  const values = eligibleValues(promo.discount, cart.items);
+  if (limited && values.every((v) => v === null)) {
+    return { ok: false, reason: 'no_eligible_items' };
+  }
+
+  // A code limited to products is worth what those lines are worth. One that
+  // is not reads the cart's own subtotal, exactly as before product lists.
+  const subtotal = limited ? values.reduce<number>((sum, v) => sum + (v ?? 0), 0) : cart.subtotal;
+
+  if (promo.discount.minSubtotal && subtotal < promo.discount.minSubtotal) {
     return { ok: false, reason: 'min_subtotal' };
   }
 
   const raw =
     promo.discount.type === 'percent'
-      ? Math.floor((cart.subtotal * promo.discount.value) / BASIS_POINTS)
+      ? Math.floor((subtotal * promo.discount.value) / BASIS_POINTS)
       : promo.discount.value;
 
   let amount = raw;
@@ -51,9 +71,60 @@ export function compute(
     amount = Math.min(amount, promo.discount.maxDiscount);
   }
   // A discount can never exceed the cart it is discounting.
-  amount = Math.min(amount, cart.subtotal);
+  amount = Math.min(amount, subtotal);
+  amount = Math.max(0, Math.floor(amount));
 
-  return { ok: true, amount: Math.max(0, Math.floor(amount)) };
+  return { ok: true, amount, lines: allocate(amount, cart.items, values) };
+}
+
+/**
+ * Split an amount that is already decided across every line of a cart, as
+ * `compute` does for a code without a product list.
+ */
+export function splitLines(amount: number, items: Cart['items']): Line[] {
+  return allocate(amount, items, items.map((item) => item.qty * item.unitPrice));
+}
+
+/** Each item's value (qty × unitPrice), or null when the code does not cover it. */
+function eligibleValues(discount: Discount, items: Cart['items']): (number | null)[] {
+  const only = discount.productIds?.length
+    ? new Set(discount.productIds.map((id) => id.toLowerCase()))
+    : null;
+  return items.map((item) =>
+    !only || (item.sku !== undefined && only.has(item.sku.toLowerCase()))
+      ? item.qty * item.unitPrice
+      : null,
+  );
+}
+
+/**
+ * Split by line value. Each eligible line gets its share rounded down and the
+ * remainder goes on the first eligible line, so the parts sum to exactly the
+ * amount. A line is never discounted below zero: remainder it cannot take
+ * moves on to the next eligible line.
+ */
+function allocate(amount: number, items: Cart['items'], values: (number | null)[]): Line[] {
+  const total = values.reduce<number>((sum, v) => sum + (v ?? 0), 0);
+  // BigInt: amount × value can pass 2^53 on a large order.
+  const parts = values.map((v) =>
+    v === null || total === 0 ? 0 : Number((BigInt(amount) * BigInt(v)) / BigInt(total)),
+  );
+
+  let rest = amount - parts.reduce((sum, p) => sum + p, 0);
+  for (let i = 0; i < values.length && rest > 0; i += 1) {
+    const v = values[i];
+    if (v === null || v === undefined) continue;
+    const take = Math.min(rest, v - parts[i]!);
+    parts[i]! += take;
+    rest -= take;
+  }
+  // Only an amount bigger than the eligible lines are worth gets here: a code
+  // without a product list on a cart whose items add up to less than its
+  // subtotal. The sum still has to be exact.
+  const first = values.findIndex((v) => v !== null);
+  if (rest > 0 && first !== -1) parts[first]! += rest;
+
+  return items.map((item, index) => ({ index, sku: item.sku ?? null, amount: parts[index]! }));
 }
 
 /**
