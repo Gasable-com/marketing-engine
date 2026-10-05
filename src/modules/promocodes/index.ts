@@ -1,6 +1,7 @@
 import { db, type Tx } from '../../db/client.js';
 import { env } from '../../env.js';
 import { emit } from '../../spine/events/index.js';
+import { resolve as resolveCompany } from '../../spine/registry/index.js';
 import { applyDocument, evaluate } from '../../spine/rules/index.js';
 import { activeLedger } from './ledger/index.js';
 import {
@@ -85,6 +86,7 @@ export type RedemptionRow = {
   promocode_id: string;
   buyer_ref: string;
   company_id: string | null;
+  buyer_company_ref: string | null;
   order_ref: string;
   currency: string;
   discount_amount: string;
@@ -154,6 +156,8 @@ export type ValidateInput = {
   code: string;
   buyerRef: string;
   companyId?: string | undefined;
+  /** The client's own id for the buying company. Stored, never looked up. */
+  buyerCompanyRef?: string | undefined;
   cart: Cart;
   at?: Date | undefined;
 };
@@ -185,6 +189,12 @@ export async function validate(
 
   if (!promo) return { valid: false, reason: 'not_found' };
 
+  // A registry id the registry has never issued is the caller's mistake, and
+  // saying so here keeps it from reaching the foreign key on reserve.
+  if (input.companyId && !(await resolveCompany(tx, input.companyId))) {
+    return { valid: false, reason: 'unknown_company' };
+  }
+
   if (
     promo.status !== 'active' ||
     promo.starts_at.getTime() > now.getTime() ||
@@ -202,6 +212,7 @@ export async function validate(
   const context = {
     buyerRef: input.buyerRef,
     companyId: input.companyId ?? null,
+    buyerCompanyRef: input.buyerCompanyRef ?? null,
     cart: input.cart,
     code: promo.code,
     now: now.toISOString(),
@@ -331,10 +342,11 @@ export async function reserve(
 
   const [row] = await tx<RedemptionRow[]>`
     insert into redemptions
-      (tenant_id, promocode_id, buyer_ref, company_id, order_ref, currency,
-       discount_amount, status, expires_at)
+      (tenant_id, promocode_id, buyer_ref, company_id, buyer_company_ref, order_ref,
+       currency, discount_amount, status, expires_at)
     values (${input.tenantId}, ${verdict.promocodeId}, ${input.buyerRef},
-            ${input.companyId ?? null}, ${input.orderRef}, ${input.cart.currency},
+            ${input.companyId ?? null}, ${input.buyerCompanyRef ?? null}, ${input.orderRef},
+            ${input.cart.currency},
             ${verdict.discountAmount}, 'reserved',
             now() + (${ttl} || ' minutes')::interval)
     returning *
@@ -367,6 +379,8 @@ export async function reserve(
     payload: {
       promocodeId: verdict.promocodeId,
       orderRef: input.orderRef,
+      buyerRef: input.buyerRef,
+      buyerCompanyRef: input.buyerCompanyRef ?? null,
       discountAmount: verdict.discountAmount,
       holds,
       lines: verdict.lines,
@@ -436,7 +450,13 @@ export async function settle(
     type: 'promo.settled',
     subjectType: 'redemption',
     subjectId: redemption.id,
-    payload: { reserved, settled: final, orderRef: redemption.order_ref },
+    payload: {
+      reserved,
+      settled: final,
+      orderRef: redemption.order_ref,
+      buyerRef: redemption.buyer_ref,
+      buyerCompanyRef: redemption.buyer_company_ref,
+    },
   });
 
   return row!;
@@ -477,7 +497,12 @@ export async function release(
     type: 'promo.released',
     subjectType: 'redemption',
     subjectId: redemption.id,
-    payload: { reason: input.reason, orderRef: redemption.order_ref },
+    payload: {
+      reason: input.reason,
+      orderRef: redemption.order_ref,
+      buyerRef: redemption.buyer_ref,
+      buyerCompanyRef: redemption.buyer_company_ref,
+    },
   });
 
   return row!;
