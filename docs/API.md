@@ -392,16 +392,24 @@ product list of a discount can change; an empty list lifts the limit.
 ### `POST /v1/promocodes/validate` — tenant JWT
 
 ```json
-{ "code": "SAVE10", "buyerRef": "cust-1", "companyId": null,
+{ "code": "SAVE10", "buyerRef": "cust-1", "buyerCompanyRef": "acct-42", "companyId": null,
   "cart": { "currency": "SAR", "subtotal": 80000,
             "items": [{ "sku": "lpg", "qty": 1, "unitPrice": 80000 }] } }
 ```
 
 → `200 { "valid": true, "discountAmount": 5000, "promocodeId": …, "lines": [{ "index": 0, "sku": "lpg", "amount": 5000 }] }` or
 `200 { "valid": false, "reason": … }`. Reasons, first true one wins:
-`not_found`, `not_active`, `currency_mismatch`, `no_eligible_items`,
+`not_found`, `unknown_company`, `not_active`, `currency_mismatch`, `no_eligible_items`,
 `min_subtotal`, `rule`, `budget_uses`, `budget_buyer`, `budget_spend`.
 Writes nothing.
+
+`buyerRef` and `buyerCompanyRef` are your own ids for the buyer and the buying
+company. Both are opaque: the engine stores them on the redemption and in its
+events and never looks them up, and a code's rules can name them. `companyId`
+is optional and is a **registry** id, for a company the engine knows (one it
+invited, imported or was told about through `/v1/companies`); marketplace
+members are not in the registry, so send `buyerCompanyRef` for them, not
+`companyId`. A `companyId` the registry never issued is `unknown_company`.
 
 `lines` has one entry per cart item, in the order sent, with `amount: 0` for an
 item the code does not cover. The discount is split across the covered items by
@@ -422,7 +430,8 @@ and one set of holds.
 stored response, lines included. The same `orderRef` under a new key returns
 the same redemption with the lines that were held, read back from its
 `promo.reserved` event, whatever cart that call sent. Emits `promo.reserved`,
-with the lines in its payload. A cart whose items add up to more than
+with the lines, `buyerRef` and `buyerCompanyRef` in its payload; `promo.settled`
+and `promo.released` carry `buyerRef` and `buyerCompanyRef` too (null when not sent). A cart whose items add up to more than
 `Number.MAX_SAFE_INTEGER` is a `400`, here and on validate.
 
 ### `POST /v1/redemptions/:id/settle` — tenant JWT, **`Idempotency-Key` required**

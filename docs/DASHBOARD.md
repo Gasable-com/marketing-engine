@@ -141,7 +141,8 @@ still apply.
 
 A code's redemptions come from **`GET /internal/redemptions?promocodeId=`**;
 pass `since` as the code's `createdAt`, or the feed's 30-day default hides older
-ones. Each redemption row carries `promocodeId`.
+ones. Each redemption row carries `promocodeId` and `buyerCompanyRef`, the
+client's own id for the buying company (null when it did not send one).
 
 ## Charts
 
