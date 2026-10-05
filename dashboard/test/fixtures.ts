@@ -203,6 +203,7 @@ export const redemptions: RedemptionRow[] = [
     promocodeId: '77777777-7777-7777-7777-777777777777',
     code: 'SAVE10',
     buyerRef: 'cust-1',
+    buyerCompanyRef: 'co-1',
     orderRef: 'order-1',
     currency: 'SAR',
     discountAmount: '5000',

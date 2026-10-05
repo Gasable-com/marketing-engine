@@ -306,7 +306,10 @@ function Redemptions({ promocodeId, since }: { promocodeId: string; since: strin
                 <td>
                   <Time iso={r.reservedAt} />
                 </td>
-                <td class="mono wrap-any">{r.buyerRef}</td>
+                <td class="mono wrap-any">
+                  {r.buyerRef}
+                  {r.buyerCompanyRef ? <div class="muted">{r.buyerCompanyRef}</div> : null}
+                </td>
                 <td class="mono wrap-any">{r.orderRef}</td>
                 <td class="num">{money(r.discountAmount, r.currency)}</td>
                 <td>

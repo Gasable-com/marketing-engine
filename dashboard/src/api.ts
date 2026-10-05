@@ -186,6 +186,7 @@ export type RedemptionRow = {
   promocodeId: string;
   code: string;
   buyerRef: string;
+  buyerCompanyRef: string | null;
   orderRef: string;
   currency: string;
   discountAmount: string;

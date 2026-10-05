@@ -260,7 +260,7 @@ function TenantTab({ tab, tenantId }: { tab: Tab; tenantId: string }) {
     return (
       <table>
         <thead>
-          <tr><th>reserved</th><th>code</th><th>order</th><th class="num">discount</th><th>status</th></tr>
+          <tr><th>reserved</th><th>code</th><th>buyer</th><th>order</th><th class="num">discount</th><th>status</th></tr>
         </thead>
         <tbody>
           {items.map((r) => (
@@ -268,6 +268,10 @@ function TenantTab({ tab, tenantId }: { tab: Tab; tenantId: string }) {
               <td><Time iso={r.reservedAt} relative /></td>
               <td class="mono">
                 <a href={href(`/promocodes/${r.promocodeId}`)}>{r.code}</a>
+              </td>
+              <td class="mono wrap-any">
+                {r.buyerRef}
+                {r.buyerCompanyRef ? <div class="muted">{r.buyerCompanyRef}</div> : null}
               </td>
               <td class="mono">{r.orderRef}</td>
               <td class="num">{money(r.discountAmount, r.currency)}</td>
