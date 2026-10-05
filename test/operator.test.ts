@@ -433,10 +433,15 @@ describe('promocodes', () => {
     return (await body<{ promocode: { id: string } }>(res)).promocode.id;
   }
 
-  async function redeem(codeName: string, buyerRef: string, orderRef: string): Promise<string> {
+  async function redeem(
+    codeName: string,
+    buyerRef: string,
+    orderRef: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<string> {
     const res = await tenant(
       '/v1/redemptions',
-      paid({ code: codeName, buyerRef, orderRef, cart: { currency: 'SAR', subtotal: 100000 } }),
+      paid({ code: codeName, buyerRef, orderRef, cart: { currency: 'SAR', subtotal: 100000 }, ...extra }),
     );
     expect(res.status).toBe(201);
     return (await body<{ redemption: { id: string } }>(res)).redemption.id;
@@ -460,7 +465,7 @@ describe('promocodes', () => {
 
   it('shows each code with what its budget has spent', async () => {
     const id = await code({ code: 'SPRING', budget: { maxUses: 3, maxSpend: 20000 } });
-    const settled = await redeem('SPRING', 'buyer-1', 'order-1');
+    const settled = await redeem('SPRING', 'buyer-1', 'order-1', { buyerCompanyRef: 'co-1' });
     const released = await redeem('SPRING', 'buyer-2', 'order-2');
     await redeem('SPRING', 'buyer-2', 'order-3');
     expect((await tenant(`/v1/redemptions/${settled}/settle`, paid({}))).status).toBe(200);
@@ -493,11 +498,14 @@ describe('promocodes', () => {
     expect((await body<{ promocode: Row }>(detail)).promocode).toEqual(items[0]);
 
     // A redemption links back to its code.
-    const feed = await body<{ items: { promocodeId: string }[] }>(
-      await op(`/internal/redemptions?promocodeId=${id}`),
-    );
+    const feed = await body<{
+      items: { promocodeId: string; orderRef: string; buyerCompanyRef: string | null }[];
+    }>(await op(`/internal/redemptions?promocodeId=${id}`));
     expect(feed.items).toHaveLength(3);
     expect(feed.items.every((r) => r.promocodeId === id)).toBe(true);
+    // And says which of the client's companies it was, when the client said.
+    const byOrder = Object.fromEntries(feed.items.map((r) => [r.orderRef, r.buyerCompanyRef]));
+    expect(byOrder).toEqual({ 'order-1': 'co-1', 'order-2': null, 'order-3': null });
   });
 
   it('says why a code cannot be redeemed', async () => {
