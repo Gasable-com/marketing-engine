@@ -9,6 +9,7 @@ import { LiveView } from './views/live.js';
 import { MessageDetailView, MessagesView, type MessageFilters } from './views/messages.js';
 import { MetricsView } from './views/metrics.js';
 import { OverviewView } from './views/overview.js';
+import { PromocodeDetailView, PromocodesView } from './views/promocodes.js';
 import { QueueView } from './views/queue.js';
 import { TenantDetailView, TenantsView } from './views/tenants.js';
 
@@ -19,6 +20,7 @@ const NAV = [
   ['/tenants', 'Tenants'],
   ['/messages', 'Messages'],
   ['/campaigns', 'Campaigns'],
+  ['/promocodes', 'Promocodes'],
   ['/deliveries', 'Deliveries'],
   ['/metrics', 'Metrics'],
   ['/companies', 'Companies'],
@@ -112,6 +114,9 @@ function View({
   if (path.startsWith('/campaigns/')) {
     return <CampaignDetailView id={path.slice('/campaigns/'.length)} />;
   }
+  if (path.startsWith('/promocodes/')) {
+    return <PromocodeDetailView id={path.slice('/promocodes/'.length)} />;
+  }
   if (path.startsWith('/tenants/')) {
     return <TenantDetailView id={path.slice('/tenants/'.length)} />;
   }
@@ -161,6 +166,15 @@ function View({
           tenantId={q('tenantId')}
           status={q('status')}
           onFilters={(next) => go('/campaigns', next)}
+        />
+      );
+    case '/promocodes':
+      return (
+        <PromocodesView
+          tenantId={q('tenantId')}
+          status={q('status')}
+          code={q('code')}
+          onFilters={(next) => go('/promocodes', next)}
         />
       );
     case '/deliveries':

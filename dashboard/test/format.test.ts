@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { count, cronToText, money, relativeTime } from '../src/format.js';
+import { count, cronToText, discount, money, relativeTime } from '../src/format.js';
 
 describe('money', () => {
   it('reads minor units, not major ones', () => {
@@ -62,5 +62,18 @@ describe('count', () => {
   it('distinguishes zero from missing', () => {
     expect(count(0)).toBe('0');
     expect(count(undefined)).toBe('—');
+  });
+});
+
+describe('discount', () => {
+  it('reads a percent as basis points and a fixed amount as minor units', () => {
+    expect(discount({ type: 'percent', value: 1000 }, 'SAR')).toBe('10%');
+    expect(discount({ type: 'percent', value: 1250 }, 'SAR')).toBe('12.5%');
+    expect(discount({ type: 'fixed', value: 2000 }, 'SAR')).toMatch(/20\.00/);
+  });
+
+  it('adds the cap and the minimum when the code has them', () => {
+    const text = discount({ type: 'percent', value: 1000, maxDiscount: 5000, minSubtotal: 50000 }, 'SAR');
+    expect(text).toMatch(/^10%, up to .*50\.00.*, min subtotal .*500\.00/);
   });
 });
