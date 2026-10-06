@@ -8,6 +8,8 @@ import { send, type ContactInput, type MessageRow } from '../messaging/index.js'
 import { activeFinder, type Candidate, type FinderQuery } from './finder/index.js';
 
 export * from './finder/index.js';
+export * from './jobs.js';
+export { DiscoveryError } from './errors.js';
 
 const DEFAULT_INVITE_DAYS = 14;
 
