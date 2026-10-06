@@ -41,6 +41,11 @@ const schema = z.object({
   SEARCH_CACHE_DAYS: z.coerce.number().int().min(0).default(30),
   DISCOVERY_MAX_QUERIES: z.coerce.number().int().min(1).default(30),
   DISCOVERY_MAX_QUERIES_PER_JOB: z.coerce.number().int().min(1).default(60),
+  // Reading websites: the self-hosted Firecrawl, with a guarded plain fetch without it.
+  FIRECRAWL_URL: z.string().url().optional(),
+  FIRECRAWL_API_KEY: z.string().optional(),
+  DISCOVERY_MAX_READS: z.coerce.number().int().min(0).default(10),
+  DISCOVERY_MAX_CLAUDE_CALLS: z.coerce.number().int().min(1).default(40),
 });
 
 export type Env = z.infer<typeof schema>;
