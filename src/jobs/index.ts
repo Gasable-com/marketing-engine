@@ -11,6 +11,12 @@ import {
   type BatchJob,
   type RunJob,
 } from '../modules/campaigns/index.js';
+import {
+  DISCOVERY_TASK_JOB,
+  TASK_RETRY_LIMIT,
+  runTask,
+  type TaskJob,
+} from '../modules/discovery/index.js';
 import { SEND_JOB, SEND_RETRY_LIMIT } from '../modules/messaging/index.js';
 import { processSend } from '../modules/messaging/worker.js';
 import { EXPIRE_JOB, expireReservations } from '../modules/promocodes/index.js';
@@ -38,8 +44,9 @@ export async function startJobs(opts: { registerWorkers?: boolean } = {}): Promi
   }
   // `short`: while one job with a singleton key is waiting, another with the
   // same key is dropped. A double schedule, or a resume racing the batch it
-  // resumes, therefore queues one job, not two.
-  for (const name of [CAMPAIGN_RUN_JOB, CAMPAIGN_BATCH_JOB]) {
+  // resumes, therefore queues one job, not two. A discovery task is keyed by
+  // its own id, so it is never waiting on the queue twice.
+  for (const name of [CAMPAIGN_RUN_JOB, CAMPAIGN_BATCH_JOB, DISCOVERY_TASK_JOB]) {
     await b.createQueue(name, { name, policy: 'short' });
   }
 
@@ -74,6 +81,15 @@ export async function startJobs(opts: { registerWorkers?: boolean } = {}): Promi
   await b.work(CAMPAIGN_BATCH_JOB, async (jobs) => {
     for (const job of jobs) {
       await withJobLog(CAMPAIGN_BATCH_JOB, job.id, () => processBatch(job.data as BatchJob));
+    }
+  });
+
+  await b.work(DISCOVERY_TASK_JOB, { includeMetadata: true }, async (jobs) => {
+    for (const job of jobs) {
+      await withJobLog(DISCOVERY_TASK_JOB, job.id, () =>
+        // Counted from 0 like SEND_JOB: the last attempt is the one at the limit.
+        runTask(job.data as TaskJob, { finalAttempt: job.retryCount >= TASK_RETRY_LIMIT }),
+      );
     }
   });
 

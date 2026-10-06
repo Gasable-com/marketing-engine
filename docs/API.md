@@ -260,9 +260,16 @@ company is private to it.
 ```
 
 `source.type` is `rfq`, `import` or `api`. Identifier types are `cr`, `vat`,
-`domain` (strong: they merge) and `phone`, `email` (weak: they link). An email
-also yields its domain. `enrich: true` asks the registrar about a `cr` first,
-when a lookup is configured.
+`domain`, `gmaps` (strong: they merge) and `phone`, `email` (weak: they link).
+A domain is stored as its registrable domain (`https://www.shop.example.com.sa/x`
+→ `example.com.sa`, and `com`, `net`, `org`, `gov`, `edu`, `ac`, `co`, `sch` or
+`med` under any two-letter country code is a suffix too); one on a shared host such as `salla.sa`, `instagram.com`
+or `business.site` is rejected as `shared host` and kept only in the source's
+`data`. An email also yields its domain, unless that is a free-mail provider or
+a shared host. `gmaps` is a Google Maps place id or cid exactly as given
+(`[A-Za-z0-9:_-]`, up to 200). `enrich: true` asks the registrar about a `cr`
+first, when a lookup is configured. Sources `web` and `maps` are written by
+discovery itself, never by a caller.
 
 → `201 { "company", "created", "mergedFrom": [ … ] }`. Emits `company.created`
 or `company.updated`, and `company.merged` when two records turn out to be one.
@@ -289,12 +296,21 @@ Same shape, found by identifier. The value is normalised before matching.
 ### `PUT /v1/companies/:id/profile` — tenant JWT
 
 ```json
-{ "buys": ["diesel"], "sells": [], "sector": "energy", "city": "Riyadh", "size": "50-200" }
+{ "buys": ["diesel"], "sells": [], "sector": "energy", "city": "Riyadh", "size": "50-200",
+  "products": ["توريد الديزل", "Diesel fuel"], "roles": ["distributor"],
+  "cities": ["Riyadh", "Dammam"], "countries": ["SA"], "quality": "full",
+  "profiledAt": "2026-10-01T00:00:00Z" }
 ```
 
 Shared, like the company. Category codes are free strings; the engine owns no
-catalogue and validates nothing against one. → `200 { "profile": … }`. Emits
-`company.profiled`.
+catalogue and validates nothing against one. `products` are product names in
+the company's own words, any language (`sells` keeps its meaning as category
+codes). `roles` are any of `manufacturer`, `distributor`, `wholesaler`,
+`retailer`, `installer`, `service_provider`, `transporter`, `other`.
+`countries` are ISO 3166-1 alpha-2, upper-cased. `quality` is `full` or `thin`,
+and `profiledAt`, an ISO timestamp, is when web evidence last filled the profile. A list left out
+or empty, and a value left out, keeps what is stored. → `200 { "profile": … }`.
+Emits `company.profiled`.
 
 ### `POST /v1/companies/import` — tenant JWT, `Content-Type: text/csv`
 
@@ -1033,6 +1049,95 @@ answers "what happened to this?" without opening it.
 - `POST /internal/webhook-deliveries/:id/replay` → `202`, any tenant including
   the platform endpoint.
 
+### Discovery jobs (operator)
+
+An operator's search for supplier companies: a product and the countries to
+look in, run for one tenant. A job is one task per country on the
+`discovery.task` queue, and a task runs through named stages; in this step the
+only stage is `rank`, which ranks the existing pool with the `products` finder.
+Nothing calls the network yet. Results are the tenant's own.
+
+#### `POST /internal/discovery/jobs`
+
+```json
+{ "tenantId": "…", "product": "ديزل", "category": "fuel", "countries": ["SA", "AE"],
+  "resultLimit": 50 }
+```
+
+`product` is 2–200 characters after trimming; `category` is an optional label
+of up to 200; `countries` are 1–10 ISO 3166-1 alpha-2 codes, upper-cased, each
+once; `resultLimit` is 1–200 per country, default 50. `400` for a bad body,
+`404` for an unknown tenant. → `201 { job, tasks }` in the shape of
+`GET /internal/discovery/jobs/:id`, the job `running` and every task `queued`.
+Emits `discovery.job.created`.
+
+#### `GET /internal/discovery/jobs?tenantId=&status=`
+
+Newest first. `status` is `running`, `done` or `failed`. Each row: `id`,
+`tenantId`, `tenantName`, `product`, `category`, `countries`, `status`,
+`counts`, `createdAt`, `finishedAt`.
+
+#### `GET /internal/discovery/jobs/:id`
+
+```json
+{ "job": { "id": "…", "tenantId": "…", "tenantName": "…", "product": "ديزل",
+           "category": null, "side": "suppliers", "countries": ["SA", "AE"],
+           "terms": [], "resultLimit": 50, "status": "done",
+           "counts": { "ranked": 2 }, "createdAt": "…", "finishedAt": "…" },
+  "tasks": [{ "id": "…", "country": "SA", "status": "done", "stage": "rank",
+              "counts": { "ranked": 2 }, "error": null, "attempts": 1,
+              "createdAt": "…", "startedAt": "…", "finishedAt": "…" }] }
+```
+
+Tasks come in the job's country order. A task is `queued`, `running`, `done`
+or `failed`; `stage` is the stage running now or the last one run, and
+`error` is set when the task failed. A task is retried by the queue and failed
+on its last attempt. The job is `done` once no task is open and at least one is
+done, `failed` if every task failed; its `counts` are its tasks' counts
+summed.
+
+#### `GET /internal/discovery/jobs/:id/results?country=`
+
+Ranked best first (`rank` is 1.. within each country), paged with `limit` and
+`cursor` like every list. Each row:
+
+```json
+{ "id": "17", "rank": 1, "score": 0.7, "country": "SA",
+  "reasons": ["product: ديزل ~ توريد الديزل", "profile: full", "profiled 5 days ago"],
+  "company": { "id": "…", "name": "…", "country": "SA" },
+  "profile": { "products": ["توريد الديزل"], "roles": ["distributor"],
+               "cities": ["Riyadh"], "quality": "full", "profiledAt": "…" },
+  "identifiers": [{ "type": "domain", "value": "example.com.sa" },
+                  { "type": "gmaps", "value": "ChIJ…" },
+                  { "type": "phone", "value": "+966…" }] }
+```
+
+`profile` is `null` for a company without one. `identifiers` are its
+`domain`, `email`, `gmaps` and `phone` values.
+
+**How `rank` scores.** A product term matches a profile product when the
+folded term is inside the folded product, or their trigram similarity is at
+least 0.4; only companies with a match come back, in the task's country by
+`companies.country` or profile `countries`, never merged away or on the
+platform. The score (0..1) is 0.5 × the best product similarity (containment
+counts as 1), plus 0.15 for a matching role, 0.15 for a matching city, 0.1 for
+a `full` profile or 0.05 for a `thin` one, and 0.1 for freshness: full within
+90 days of `profiledAt`, falling to nothing at 365. Each signal that scored is
+one reason.
+
+#### Events
+
+| Event | Payload |
+| --- | --- |
+| `discovery.job.created` | `jobId`, `product`, `countries` |
+| `discovery.task.finished` | `jobId`, `taskId`, `country`, `counts` |
+| `discovery.task.failed` | `jobId`, `taskId`, `country`, `error`, `attempts` |
+| `discovery.job.finished` | `jobId`, `status`, `counts` |
+
+All four have `subjectType: "discovery_job"` and the job's id as `subjectId`,
+so one filter reads a job's whole history. Every rank also writes a
+`finder_runs` row with `finder = "products"`.
+
 ### `GET /internal/metrics`
 
 `series=messages|events|redemptions|searches`, `bucket=hour|day`, optional
@@ -1068,7 +1173,9 @@ here was later rolled back.
 `consent.revoked` · `suppression.added` · `message.queued` · `message.blocked` ·
 `message.sent` · `message.delivered` · `message.read` · `message.failed` ·
 `message.replied` · `message.fallback` · `company.created` · `company.updated` ·
-`company.merged` · `company.profiled` · `discovery.searched` · `invite.sent` ·
+`company.merged` · `company.profiled` · `discovery.searched` ·
+`discovery.job.created` · `discovery.task.finished` · `discovery.task.failed` ·
+`discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·
 `promo.released` · `contact.upserted` · `audience.saved` · `audience.deleted` ·
 `campaign.created` · `campaign.scheduled` · `campaign.run.started` ·

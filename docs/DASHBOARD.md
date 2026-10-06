@@ -169,8 +169,10 @@ need percentiles or retention, read the event log into something that is.
 
 ## What is not here
 
-No write endpoints beyond retry and replay. No per-tenant dashboard routes —
-tenants already have their own scoped lists under `/v1`. No HTML. If the
+No write endpoints beyond retry and replay, and the discovery operator
+actions: creating a search (step 17) and reviewing results (step 21). No
+per-tenant dashboard routes — tenants already have their own scoped lists
+under `/v1`. No HTML. If the
 dashboard needs something the engine does not expose, add a read endpoint here
 rather than reaching into the database: direct database access is how two
 sources of truth start.
