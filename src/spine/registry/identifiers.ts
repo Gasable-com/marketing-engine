@@ -66,7 +66,9 @@ export const SHARED_HOSTS: ReadonlySet<string> = new Set([
 
 /**
  * Public suffixes of two labels, kept short and explicit rather than pulling
- * in the whole public suffix list. Every other suffix counts as one label.
+ * in the whole public suffix list. Beyond these, a generic second level under
+ * a two-letter country code (`com.kw`, `org.qa`) is also two labels; every
+ * other suffix counts as one.
  */
 const TWO_LEVEL_SUFFIXES = new Set([
   'com.sa',
@@ -88,6 +90,22 @@ const TWO_LEVEL_SUFFIXES = new Set([
   'com.cn',
   'co.in',
 ]);
+
+/**
+ * Second-level labels that are a registry's category, not a name, under a
+ * country code. Without them every company on `*.com.kw` would share the
+ * strong identifier `com.kw` and merge into one.
+ */
+const GENERIC_SECOND_LEVELS = new Set(['com', 'net', 'org', 'gov', 'edu', 'ac', 'co', 'sch', 'med']);
+
+function isTwoLevelSuffix(labels: string[]): boolean {
+  const [second, top] = labels.slice(-2);
+  if (!second || !top) return false;
+  return (
+    TWO_LEVEL_SUFFIXES.has(`${second}.${top}`) ||
+    (/^[a-z]{2}$/.test(top) && GENERIC_SECOND_LEVELS.has(second))
+  );
+}
 
 /** The marketplace's own domain identifies the marketplace, not a counterparty. */
 function ownDomain(): string | undefined {
@@ -232,7 +250,7 @@ export function normalizeDomain(value: string): string | null {
   if (/^\d+(\.\d+)+$/.test(host)) return null;
 
   const labels = host.split('.');
-  const keep = TWO_LEVEL_SUFFIXES.has(labels.slice(-2).join('.')) ? 3 : 2;
+  const keep = isTwoLevelSuffix(labels) ? 3 : 2;
   // A bare public suffix such as `com.sa` names nobody.
   if (labels.length < keep) return null;
   return labels.slice(-keep).join('.');
