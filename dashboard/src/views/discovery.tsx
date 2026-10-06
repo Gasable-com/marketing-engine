@@ -548,6 +548,9 @@ export function DiscoveryJob({
             <Field label="country">
               <Select value={country} options={job.countries} onChange={onCountry} />
             </Field>
+            <a class="button" href={api.discoveryResultsCsvUrl(job.id, { country })} download>
+              Download CSV{country ? ` (${country})` : ''}
+            </a>
           </div>
           {/* Asked again whenever the job moves on, so results appear as tasks finish. */}
           <Results jobId={job.id} country={country} version={`${job.status}:${JSON.stringify(job.counts)}:${tasks.map((t) => t.status).join()}`} />

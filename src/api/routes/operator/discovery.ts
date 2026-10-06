@@ -115,29 +115,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
   const [job] = await sql`select id from discovery_jobs where id = ${id.data}`;
   if (!job) return c.json({ error: 'not found' }, 404);
 
-  const rows = await sql<ResultRow[]>`
-    select r.id::text as id, r.rank, r.score, r.reasons, k.country, r.tier, r.fit, r.evidence,
-           r.persona_id::text as persona_id, ps.name as persona_name,
-           c.id::text as company_id, c.name as company_name, c.country as company_country,
-           p.company_id is not null as has_profile, p.products, p.roles, p.cities,
-           p.quality, p.profiled_at,
-           coalesce((
-             select json_agg(json_build_object('type', i.type, 'value', i.value)
-                             order by i.type, i.value)
-             from company_identifiers i
-             where i.company_id = c.id and i.type in ('domain', 'phone', 'email', 'gmaps')
-           ), '[]'::json) as identifiers
-    from discovery_results r
-    join discovery_tasks k on k.id = r.task_id
-    join companies c on c.id = r.company_id
-    left join company_profiles p on p.company_id = c.id
-    left join discovery_personas ps on ps.id = r.persona_id
-    where r.job_id = ${id.data}
-      ${q.data.country ? sql`and k.country = ${q.data.country}` : sql``}
-      ${q.data.cursor ? sql`and (r.rank, r.id) > (select rank, id from discovery_results where id = ${q.data.cursor})` : sql``}
-    order by r.rank, r.id
-    limit ${q.data.limit}
-  `;
+  const rows = await resultRows(id.data, q.data);
 
   return c.json(
     page(
@@ -166,6 +144,121 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
       q.data.limit,
     ),
   );
+});
+
+/** A job's ranked results, rank order; both the page and the CSV read these. */
+async function resultRows(
+  jobId: string,
+  opts: { country?: string | undefined; cursor?: string | undefined; limit: number },
+): Promise<ResultRow[]> {
+  const sql = db();
+  return sql<ResultRow[]>`
+    select r.id::text as id, r.rank, r.score, r.reasons, k.country, r.tier, r.fit, r.evidence,
+           r.persona_id::text as persona_id, ps.name as persona_name,
+           c.id::text as company_id, c.name as company_name, c.country as company_country,
+           p.company_id is not null as has_profile, p.products, p.roles, p.cities,
+           p.quality, p.profiled_at,
+           coalesce((
+             select json_agg(json_build_object('type', i.type, 'value', i.value)
+                             order by i.type, i.value)
+             from company_identifiers i
+             where i.company_id = c.id and i.type in ('domain', 'phone', 'email', 'gmaps')
+           ), '[]'::json) as identifiers
+    from discovery_results r
+    join discovery_tasks k on k.id = r.task_id
+    join companies c on c.id = r.company_id
+    left join company_profiles p on p.company_id = c.id
+    left join discovery_personas ps on ps.id = r.persona_id
+    where r.job_id = ${jobId}
+      ${opts.country ? sql`and k.country = ${opts.country}` : sql``}
+      ${opts.cursor ? sql`and (r.rank, r.id) > (select rank, id from discovery_results where id = ${opts.cursor})` : sql``}
+    order by r.rank, r.id
+    limit ${opts.limit}
+  `;
+}
+
+/** At most this many rows in one CSV: every country of a job at the highest result limit. */
+const CSV_MAX_ROWS = 2000;
+
+const CSV_COLUMNS = [
+  'rank', 'country', 'tier', 'score', 'company', 'company_id', 'persona', 'fit',
+  'domains', 'phones', 'emails', 'google_maps_ids', 'products', 'roles', 'cities',
+  'profile_quality', 'profiled_at', 'evidence', 'reasons',
+] as const;
+
+/**
+ * One CSV cell, quoted when it must be. Free text came from web pages, so a
+ * text cell a spreadsheet would read as a formula (=, +, -, @, tab, CR) gets
+ * a leading apostrophe. Values the engine normalised itself (E.164 phones,
+ * domains, ids, numbers) are written as they are.
+ */
+function csvCell(value: unknown, kind: 'text' | 'value' = 'text'): string {
+  let text = value === null || value === undefined ? '' : String(value);
+  if (kind === 'text' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** Which columns hold the engine's own normalised values rather than page text. */
+const CSV_VALUE_COLUMNS = new Set([
+  'rank', 'country', 'tier', 'score', 'company_id', 'fit', 'domains', 'phones', 'emails',
+  'google_maps_ids', 'profile_quality', 'profiled_at',
+]);
+
+discoveryOperator.get('/internal/discovery/jobs/:id/results.csv', async (c) => {
+  const id = z.string().uuid().safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+  const q = z.object({ country: country.optional() }).safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
+
+  const [job] = await db()<{ product: string; side: string; identified_name: string | null; created_at: Date }[]>`
+    select product, side, identified->>'name' as identified_name, created_at
+    from discovery_jobs where id = ${id.data}
+  `;
+  if (!job) return c.json({ error: 'not found' }, 404);
+
+  const rows = await resultRows(id.data, { ...(q.data.country ? { country: q.data.country } : {}), limit: CSV_MAX_ROWS });
+  const values = (r: ResultRow, type: string) =>
+    r.identifiers.filter((i) => i.type === type).map((i) => i.value).join('; ');
+  const lines = [
+    CSV_COLUMNS.join(','),
+    ...rows.map((r) =>
+      [
+        r.rank,
+        r.country,
+        r.tier,
+        r.score.toFixed(3),
+        r.company_name,
+        r.company_id,
+        r.persona_name,
+        r.fit,
+        values(r, 'domain'),
+        values(r, 'phone'),
+        values(r, 'email'),
+        values(r, 'gmaps'),
+        (r.products ?? []).join('; '),
+        (r.roles ?? []).join('; '),
+        (r.cities ?? []).join('; '),
+        r.quality,
+        r.profiled_at ? r.profiled_at.toISOString() : '',
+        r.evidence.map((e) => `${e.claim}: "${e.quote}" (${e.url})`).join(' | '),
+        r.reasons.join(' | '),
+      ]
+        .map((v, i) => csvCell(v, CSV_VALUE_COLUMNS.has(CSV_COLUMNS[i]!) ? 'value' : 'text'))
+        .join(','),
+    ),
+  ];
+
+  // The product names the file; anything outside plain ASCII goes in filename*.
+  const name = (job.identified_name ?? job.product).trim();
+  const slug = name.normalize('NFKD').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'search';
+  const stem = `discovery-${slug}-${job.side}${q.data.country ? `-${q.data.country}` : ''}-${job.created_at.toISOString().slice(0, 10)}`;
+
+  // A byte-order mark so a spreadsheet reads the Arabic as UTF-8.
+  return c.body(`\uFEFF${lines.join('\r\n')}\r\n`, 200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${stem}.csv"; filename*=UTF-8''${encodeURIComponent(`discovery-${name}-${job.side}.csv`)}`,
+    'Cache-Control': 'no-store',
+  });
 });
 
 discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {

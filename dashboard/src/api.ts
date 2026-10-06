@@ -535,6 +535,8 @@ export const api = {
     get<Page<DiscoveryResult>>(`/discovery/jobs/${id}/results`, params),
   discoveryCandidates: (id: string, params: Params) =>
     get<Page<DiscoveryCandidate>>(`/discovery/jobs/${id}/candidates`, params),
+  /** The engine writes the CSV; the page only links to it. */
+  discoveryResultsCsvUrl: (id: string, params: Params) => `${BASE}/discovery/jobs/${id}/results.csv${toQuery(params)}`,
   createDiscoveryJob: (body: NewDiscoveryJob) => send<DiscoveryJobDetail>('/discovery/jobs', body),
   readRow: (row: string) => send<RowReading>('/discovery/read-row', { row }),
 

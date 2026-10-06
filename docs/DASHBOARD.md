@@ -166,6 +166,10 @@ a Claude usage limit is hit the job or task says `waiting` with the time it
 resumes, as the engine reports it; the page asks again while the engine says
 the job is `live`.
 
+**Download CSV** on a search's page links to
+**`GET /internal/discovery/jobs/:id/results.csv?country`**: the engine writes
+the file, for the country selected or all of them.
+
 **`GET /internal/discovery/jobs/:id/candidates?country&status`** is what the
 searches found, kept first, with each candidate's persona, fit and triage
 reason; the job page lists the kept ones and shows the dropped ones on request.

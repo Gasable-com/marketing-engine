@@ -1211,6 +1211,18 @@ Counts from reading: `read`, `read_failed`, `read_skipped_fresh`,
 they are read, with a reason; the candidates route returns each one's checked
 `evidence`.
 
+#### `GET /internal/discovery/jobs/:id/results.csv?country=`
+
+The same results as a file to download: `text/csv; charset=utf-8` with a
+byte-order mark (so a spreadsheet reads Arabic correctly), `Content-Disposition:
+attachment` named after the product, side, country and date, at most 2 000
+rows. Columns: `rank, country, tier, score, company, company_id, persona, fit,
+domains, phones, emails, google_maps_ids, products, roles, cities,
+profile_quality, profiled_at, evidence, reasons`; lists are joined with `; `,
+evidence as `claim: "quote" (url)` joined with ` | `. A text cell from a web page
+that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is
+prefixed with `'`. `404` for an unknown job.
+
 #### `GET /internal/discovery/jobs/:id/candidates?country=&status=kept,new`
 
 What the job's searches turned up, one row per company, kept first (strong fits

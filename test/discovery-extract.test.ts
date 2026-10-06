@@ -483,6 +483,44 @@ describe('read, extract, save, rank', () => {
     for (const rows of dumps) for (const row of rows) expect(String(row['t'])).not.toContain(marker);
   });
 
+  it('exports the results as a CSV the operator can download', async () => {
+    extractTweak = (host, answer) => {
+      // A page that tries to smuggle a spreadsheet formula into a cell.
+      if (host === 'desertfuel.sa') {
+        answer['products'] = [q('=HYPERLINK("http://evil.test","click")', 'Desert Fuel Est. supplies diesel', 'https://desertfuel.sa/')];
+      }
+    };
+    const { jobId, results } = await search({ product: 'diesel', side: 'suppliers' });
+    const res = await app.fetch(
+      new Request(`http://engine.test/internal/discovery/jobs/${jobId}/results.csv?country=SA`, {
+        headers: { 'X-Internal-Token': INTERNAL_TOKEN },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    expect(res.headers.get('content-disposition')).toMatch(/^attachment; filename="discovery-diesel-fuel-suppliers-SA-\d{4}-\d{2}-\d{2}\.csv"/);
+
+    const raw = new Uint8Array(await res.arrayBuffer());
+    expect([...raw.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const text = new TextDecoder().decode(raw.slice(3));
+    const lines = text.trimEnd().split('\r\n');
+    expect(lines[0]).toBe(
+      'rank,country,tier,score,company,company_id,persona,fit,domains,phones,emails,google_maps_ids,products,roles,cities,profile_quality,profiled_at,evidence,reasons',
+    );
+    expect(lines).toHaveLength(results.length + 1);
+    expect(lines[1]).toMatch(/^1,SA,found,/);
+    expect(text).toContain('نجم للمحروقات');
+    expect(text).toContain(',+966501111111,');
+    expect(text).toContain('"\'=HYPERLINK(""http://evil.test"",""click"")"');
+
+    const missing = await app.fetch(
+      new Request('http://engine.test/internal/discovery/jobs/44444444-4444-4444-4444-444444444444/results.csv', {
+        headers: { 'X-Internal-Token': INTERNAL_TOKEN },
+      }),
+    );
+    expect(missing.status).toBe(404);
+  });
+
   it('keeps one tenant’s web provenance from another', async () => {
     await search({ product: 'diesel', side: 'suppliers' });
     const seen = (tenantId: string) =>
