@@ -1061,8 +1061,17 @@ Nothing calls the network yet. Results are the tenant's own.
 
 ```json
 { "tenantId": "…", "product": "ديزل", "category": "fuel", "countries": ["SA", "AE"],
-  "resultLimit": 50 }
+  "resultLimit": 50, "side": "suppliers", "row": "…the pasted row, optional…" }
 ```
+
+`side` is `suppliers` (default: companies that sell the product) or `buyers`
+(companies that would buy and use it). With the Claude bridge configured
+(`CLAUDE_RUNNER_URL`, `CLAUDE_RUNNER_TOKEN`) the job starts `planning` with no
+tasks yet: on the `discovery.plan` queue it identifies the product and lists
+3–6 personas for its side, then turns `running` and creates and queues one task
+per country. Without the bridge a suppliers job starts `running` with its tasks
+at once, and a buyers job is `400 buyers_need_planning`. Until steps 19–20 a
+buyers task ranks nothing (`skipped_rank_buyers: 1`).
 
 `product` is 2–200 characters after trimming; `category` is an optional label
 of up to 200; `countries` are 1–10 ISO 3166-1 alpha-2 codes, upper-cased, each
@@ -1094,9 +1103,9 @@ stored.
 
 #### `GET /internal/discovery/jobs?tenantId=&status=`
 
-Newest first. `status` is `running`, `done` or `failed`. Each row: `id`,
-`tenantId`, `tenantName`, `product`, `category`, `countries`, `status`,
-`counts`, `createdAt`, `finishedAt`.
+Newest first. `status` is `planning`, `running`, `done` or `failed`. Each row:
+`id`, `tenantId`, `tenantName`, `product`, `category`, `side`,
+`identifiedName`, `countries`, `status`, `counts`, `createdAt`, `finishedAt`.
 
 #### `GET /internal/discovery/jobs/:id`
 
@@ -1109,6 +1118,17 @@ Newest first. `status` is `running`, `done` or `failed`. Each row: `id`,
               "counts": { "ranked": 2 }, "error": null, "attempts": 1,
               "createdAt": "…", "startedAt": "…", "finishedAt": "…" }] }
 ```
+
+The job also carries `identified` (Claude's identification: `name`, `nameAr`,
+`brand`, `model`, `category`, `aliases`, `description`, `uses`, or `null`),
+`error`, `sourceRow`, `attempts`, `deferrals`, `startedAt`, `waiting` and
+`live`; the response has `personas` (in order: `id`, `position`, `name`,
+`description`, `roles`, `sectors`, `searchTerms`, `placesTerms`, `signals`);
+each task carries `deferrals` and `waiting`. `waiting` is
+`{ "reason": "usage_limit", "until": "…" }` while a Claude usage limit holds the
+job or task back, else `null`. `live` is `true` while the job is `planning` or
+`running`. For a suppliers job `terms` are the identified aliases; a buyers job
+never searches for the product's own names.
 
 Tasks come in the job's country order. A task is `queued`, `running`, `done`
 or `failed`; `stage` is the stage running now or the last one run, and
@@ -1153,9 +1173,12 @@ one reason.
 | `discovery.job.created` | `jobId`, `product`, `countries` |
 | `discovery.task.finished` | `jobId`, `taskId`, `country`, `counts` |
 | `discovery.task.failed` | `jobId`, `taskId`, `country`, `error`, `attempts` |
-| `discovery.job.finished` | `jobId`, `status`, `counts` |
+| `discovery.job.finished` | `jobId`, `status`, `counts`, and `error` for a job that failed in planning |
+| `discovery.job.planned` | `jobId`, `product` (the identified name), `personas` (names) |
+| `discovery.job.deferred` | `jobId`, `resetsAt` |
+| `discovery.task.deferred` | `jobId`, `taskId`, `country`, `resetsAt` |
 
-All four have `subjectType: "discovery_job"` and the job's id as `subjectId`,
+All of them have `subjectType: "discovery_job"` and the job's id as `subjectId`,
 so one filter reads a job's whole history. Every rank also writes a
 `finder_runs` row with `finder = "products"`.
 
@@ -1195,7 +1218,8 @@ here was later rolled back.
 `message.sent` · `message.delivered` · `message.read` · `message.failed` ·
 `message.replied` · `message.fallback` · `company.created` · `company.updated` ·
 `company.merged` · `company.profiled` · `discovery.searched` ·
-`discovery.job.created` · `discovery.task.finished` · `discovery.task.failed` ·
+`discovery.job.created` · `discovery.job.planned` · `discovery.job.deferred` ·
+`discovery.task.finished` · `discovery.task.failed` · `discovery.task.deferred` ·
 `discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·
 `promo.released` · `contact.upserted` · `audience.saved` · `audience.deleted` ·

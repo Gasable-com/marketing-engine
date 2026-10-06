@@ -359,12 +359,18 @@ export type DiscoveryJobRow = {
   tenantName: string;
   product: string;
   category: string | null;
+  side: 'suppliers' | 'buyers';
+  /** Claude's name for the product, once the job has planned. */
+  identifiedName?: string | null;
   countries: string[];
   status: string;
   counts: Record<string, number>;
   createdAt: string;
   finishedAt: string | null;
 };
+
+/** Why something is not moving, as the engine says: waiting for a usage limit to reset. */
+export type Waiting = { reason: string; until: string } | null;
 
 export type DiscoveryTask = {
   id: string;
@@ -375,13 +381,47 @@ export type DiscoveryTask = {
   counts: Record<string, number>;
   error: string | null;
   attempts: number;
+  waiting?: Waiting;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
 };
 
+export type Identified = {
+  name: string;
+  nameAr: string;
+  brand: string | null;
+  model: string | null;
+  category: string;
+  aliases: string[];
+  description: string;
+  uses: string[];
+};
+
+export type DiscoveryPersona = {
+  id: string;
+  position: number;
+  name: string;
+  description: string;
+  roles: string[];
+  sectors: string[];
+  searchTerms: string[];
+  placesTerms: string[];
+  signals: string[];
+};
+
 export type DiscoveryJobDetail = {
-  job: DiscoveryJobRow & { side: string; terms: string[]; resultLimit: number };
+  job: DiscoveryJobRow & {
+    terms: string[];
+    resultLimit: number;
+    identified: Identified | null;
+    error: string | null;
+    sourceRow: string | null;
+    waiting: Waiting;
+    /** True while the job is planning or running: worth asking again. */
+    live: boolean;
+  };
+  personas: DiscoveryPersona[];
   tasks: DiscoveryTask[];
 };
 
@@ -417,6 +457,8 @@ export type RowReading = {
 
 export type NewDiscoveryJob = {
   tenantId: string;
+  side: 'suppliers' | 'buyers';
+  row?: string;
   product: string;
   category?: string;
   countries: string[];

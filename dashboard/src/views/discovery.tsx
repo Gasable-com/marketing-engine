@@ -25,14 +25,14 @@ import {
   useAsync,
 } from '../ui/index.js';
 
-const STATUSES = ['running', 'done', 'failed'];
+const STATUSES = ['planning', 'running', 'done', 'failed'];
 
 /** How often a running job's page asks again. */
 const LIVE_MS = 3000;
 
 /** Said wherever a search's reach matters: it does not go to the web yet. */
 const POOL_ONLY =
-  'A search ranks the companies already in the pool by their profile products. Searching the web and Maps comes with steps 18–20.';
+  'Until web search is switched on, a search ranks only the companies already in the pool, and a buyers search ranks nothing yet.';
 
 type Filters = { tenantId: string; status: string };
 
@@ -102,6 +102,7 @@ function JobTable({ rows }: { rows: DiscoveryJobRow[] }) {
           <th>created</th>
           <th>tenant</th>
           <th>product</th>
+          <th>looking for</th>
           <th>countries</th>
           <th>status</th>
           <th class="num">ranked</th>
@@ -122,9 +123,11 @@ function JobTable({ rows }: { rows: DiscoveryJobRow[] }) {
             </td>
             <td>{j.tenantName}</td>
             <td>
-              {j.product}
+              {j.identifiedName ?? j.product}
+              {j.identifiedName ? <div class="muted">{j.product}</div> : null}
               {j.category ? <div class="muted">{j.category}</div> : null}
             </td>
+            <td>{j.side}</td>
             <td class="mono">{j.countries.join(' ')}</td>
             <td>
               <Badge value={j.status} />
@@ -148,6 +151,7 @@ export function NewDiscoveryView() {
   const tenants = useAsync(() => api.tenants({ limit: 500 }), []);
 
   const [tenantId, setTenantId] = useState('');
+  const [side, setSide] = useState<'' | 'suppliers' | 'buyers'>('');
   const [row, setRow] = useState('');
   const [reading, setReading] = useState<RowReading | null>(null);
   const [product, setProduct] = useState('');
@@ -186,6 +190,8 @@ export function NewDiscoveryView() {
     try {
       const created = await api.createDiscoveryJob({
         tenantId,
+        side: side as 'suppliers' | 'buyers',
+        ...(row.trim() ? { row } : {}),
         product,
         ...(category.trim() ? { category } : {}),
         // Split as typed; the engine checks and upper-cases the codes.
@@ -228,6 +234,33 @@ export function NewDiscoveryView() {
               </select>
             )}
           </label>
+
+          <div>
+            <div class="muted" style="font-size:11px;margin-bottom:4px">looking for</div>
+            <div class="actions">
+              <button
+                class={side === 'suppliers' ? 'primary' : ''}
+                aria-pressed={side === 'suppliers'}
+                onClick={() => setSide('suppliers')}
+              >
+                Find suppliers
+              </button>
+              <button
+                class={side === 'buyers' ? 'primary' : ''}
+                aria-pressed={side === 'buyers'}
+                onClick={() => setSide('buyers')}
+              >
+                Find buyers
+              </button>
+              <span class="muted">
+                {side === 'suppliers'
+                  ? 'companies that sell this product'
+                  : side === 'buyers'
+                    ? 'companies that would buy and use it'
+                    : 'choose one'}
+              </span>
+            </div>
+          </div>
 
           <label>
             a row from the portal's product table, with its header line if you have it
@@ -273,7 +306,7 @@ export function NewDiscoveryView() {
           </label>
 
           <div class="actions">
-            <button class="primary" onClick={create} disabled={!tenantId || !product.trim() || busy !== null}>
+            <button class="primary" onClick={create} disabled={!tenantId || !side || !product.trim() || busy !== null}>
               {busy === 'creating' ? 'starting…' : 'Search'}
             </button>
           </div>
@@ -335,10 +368,11 @@ export function DiscoveryJobView({
   const [live, setLive] = useState(true);
   const { state, loadedAt } = useAsync(() => api.discoveryJob(id), [id], live ? LIVE_MS : undefined);
 
-  const jobStatus = state.status === 'ok' ? state.data.job.status : null;
+  // The engine says whether the job can still change.
+  const engineLive = state.status === 'ok' ? state.data.job.live : null;
   useEffect(() => {
-    if (jobStatus) setLive(jobStatus === 'running');
-  }, [jobStatus]);
+    if (engineLive !== null) setLive(engineLive);
+  }, [engineLive]);
 
   if (state.status === 'loading') return <Loading what="the search" />;
   if (state.status === 'error') return <Failed error={state.error} what="the search" />;
@@ -357,16 +391,24 @@ export function DiscoveryJob({
   country: string;
   onCountry: (country: string) => void;
 }) {
-  const { job, tasks } = detail;
+  const { job, tasks, personas } = detail;
 
   return (
     <>
       <div class="head">
-        <h2>{job.product}</h2>
+        <h2>{job.identified?.name ?? job.product}</h2>
         <Badge value={job.status} />
         <span class="mono muted">{job.id}</span>
         <Stamp at={loadedAt} />
       </div>
+
+      {job.waiting ? (
+        <div class="banner">
+          Waiting for the Claude usage limit to reset, until <Time iso={job.waiting.until} />. It carries on by
+          itself.
+        </div>
+      ) : null}
+      {job.error ? <div class="banner critical">{job.error}</div> : null}
 
       <div class="cards">
         <Card title="search">
@@ -375,7 +417,8 @@ export function DiscoveryJob({
               <Row k="tenant">
                 <a href={href(`/tenants/${job.tenantId}`)}>{job.tenantName}</a>
               </Row>
-              <Row k="product">{job.product}</Row>
+              <Row k="looking for">{job.side === 'buyers' ? 'buyers of the product' : 'suppliers of the product'}</Row>
+              <Row k="as entered">{job.product}</Row>
               <Row k="category">{job.category ?? <span class="muted">—</span>}</Row>
               <Row k="countries">
                 <span class="mono">{job.countries.join(' ')}</span>
@@ -400,6 +443,66 @@ export function DiscoveryJob({
           </table>
         </Card>
 
+        <Card title="product">
+          {job.identified ? (
+            <table>
+              <tbody>
+                <Row k="name">{job.identified.name}</Row>
+                <Row k="Arabic">{job.identified.nameAr}</Row>
+                <Row k="brand · model">
+                  {[job.identified.brand, job.identified.model].filter(Boolean).join(' · ') || (
+                    <span class="muted">—</span>
+                  )}
+                </Row>
+                <Row k="category">{job.identified.category}</Row>
+                <Row k="also called">{job.identified.aliases.join(' · ')}</Row>
+                <Row k="what it is">{job.identified.description}</Row>
+                <Row k="used for">{job.identified.uses.join(' · ')}</Row>
+              </tbody>
+            </table>
+          ) : (
+            <span class="muted">{job.status === 'planning' ? 'identifying…' : 'not identified (no Claude bridge)'}</span>
+          )}
+        </Card>
+
+        <Card title={job.side === 'buyers' ? 'who would buy it' : 'who sells it'} wide>
+          {personas.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>persona</th>
+                  <th>why</th>
+                  <th>search terms</th>
+                  <th>Maps keywords</th>
+                  <th>signals on a website</th>
+                </tr>
+              </thead>
+              <tbody>
+                {personas.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      {p.name}
+                      <div class="muted">{[...p.roles, ...p.sectors].join(', ')}</div>
+                    </td>
+                    <td>{p.description}</td>
+                    <td>{p.searchTerms.join(' · ')}</td>
+                    <td>{p.placesTerms.join(' · ')}</td>
+                    <td>
+                      <ul class="reasons">
+                        {p.signals.map((signal) => (
+                          <li key={signal}>{signal}</li>
+                        ))}
+                      </ul>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <span class="muted">{job.status === 'planning' ? 'working out who to look for…' : 'no personas'}</span>
+          )}
+        </Card>
+
         <Card title="tasks">
           <table>
             <thead>
@@ -419,6 +522,11 @@ export function DiscoveryJob({
                   <td>
                     <Badge value={t.status} />
                     {t.error ? <div class="muted wrap-any">{t.error}</div> : null}
+                    {t.waiting ? (
+                      <div class="muted">
+                        waiting until <Time iso={t.waiting.until} />
+                      </div>
+                    ) : null}
                   </td>
                   <td class="mono">{t.stage ?? <span class="muted">—</span>}</td>
                   <td>
