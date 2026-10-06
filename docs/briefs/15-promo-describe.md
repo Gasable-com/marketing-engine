@@ -9,7 +9,7 @@ Read `CLAUDE.md` and `docs/ARCHITECTURE.md` first. The corporate checkout keeps 
 { "codes": ["WELCOME5", "NOPE"], "buyerRef": "<auth user id>", "at": "…" }
 ```
 
-`codes`: 1 to 20. `at` (optional) is as on validate.
+`codes`: 1 to 20. `at` (optional) is as on validate. Corporate also sends `buyerCompanyRef` (its own company id); it is accepted and ignored, as on validate and hold, until per-company limits or targeting use it. It is not `companyId`: that field references the engine's own `companies` registry (a foreign key on `redemptions.company_id`), so a marketplace company id there fails the hold.
 
 → `200 { "codes": [ … ] }`, one entry per code, in the order sent, `code` as sent:
 - Unknown: `{ "code": "NOPE", "found": false }`.
