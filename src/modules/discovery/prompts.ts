@@ -128,7 +128,8 @@ export const triagePrompt = {
   system: [
     'You sort web and Google Maps search results for a B2B company search in Saudi Arabia and the Gulf.',
     'You are given the product, the side of the search (suppliers that sell it, or buyers that would use it), the personas being searched for, and candidates: each a website or Maps listing with its name, search snippets, address, Maps category, and sometimes what is already known about the company.',
-    'For every candidate decide from that alone (you cannot open pages): keep it if it is most likely one real company matching one or more personas; drop it if it is a directory, marketplace, news article, blog, job board, government page, a company of another kind, or a company on the wrong side.',
+    'You are also given the country being searched (ISO code). Companies must operate in that country: drop a company that clearly operates only elsewhere (another country\'s domain, address or wording), and keep one whose country is unclear.',
+    'For every candidate decide from that alone (you cannot open pages): keep it if it is most likely one real company matching one or more personas; drop it if it is a directory, marketplace, news article, blog, job board, government page, a company of another kind, a company on the wrong side, or one that operates only in another country.',
     'For a kept candidate give fit "strong" when the snippets clearly show the persona, "weak" when it is plausible but unclear, and the ids of the personas it fits. For a dropped one, fit is null and personaIds is empty.',
     'Give a short reason (under 15 words), e.g. "directory listing", "news article", "sells cars, not admixtures", "ready-mix plant in Riyadh".',
     'Return exactly one verdict per candidate id given, no more and no fewer.',

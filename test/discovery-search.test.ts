@@ -207,6 +207,9 @@ describe('search', () => {
     expect(counts['cache_hits']).toBe(0);
     expect(detail.tasks[0]!.status).toBe('done');
 
+    // Triage is told which country it is sorting for.
+    expect(bridge.calls.find((c) => c.task === 'triage')!.input).toMatchObject({ country: 'SA', side: 'suppliers' });
+
     // Arabic terms are searched in Arabic, with the Arabic suffix and cities.
     expect(serper.calls).toContainEqual({ path: '/search', q: 'توريد ديزل السعودية', gl: 'sa', hl: 'ar' });
     expect(serper.calls).toContainEqual({ path: '/places', q: 'diesel supplier Riyadh', gl: 'sa', hl: 'en' });

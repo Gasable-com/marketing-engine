@@ -269,6 +269,7 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
     const ids = new Set(batch.map((c) => c.id));
     const input = JSON.stringify({
       side: job.side,
+      country: task.country,
       product: job.identified
         ? { name: job.identified.name, category: job.identified.category, description: job.identified.description, uses: job.identified.uses }
         : { name: job.product },
