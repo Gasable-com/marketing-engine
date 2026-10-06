@@ -3,7 +3,7 @@ import { db, type Tx } from '../../db/client.js';
 import { env } from '../../env.js';
 import { emit } from '../../spine/events/index.js';
 import type { Channel } from '../../spine/contacts/normalize.js';
-import { resolve, type CompanyRow } from '../../spine/registry/index.js';
+import { foldText, resolve, type CompanyRow } from '../../spine/registry/index.js';
 import { send, type ContactInput, type MessageRow } from '../messaging/index.js';
 import { activeFinder, type Candidate, type FinderQuery } from './finder/index.js';
 
@@ -175,8 +175,16 @@ export async function setProfile(
     countries?: string[] | undefined;
     quality?: 'full' | 'thin' | undefined;
     profiledAt?: Date | undefined;
+    /**
+     * Add to what is stored instead of replacing it: lists are unioned
+     * (products folded for duplicates and capped at 50), and quality only ever
+     * goes up. For web evidence, which sees one side of a company at a time.
+     */
+    merge?: boolean | undefined;
   },
 ): Promise<ProfileRow> {
+  if (input.merge) return mergeProfile(tx, input);
+
   // Like the other lists, an empty one leaves what is there: a caller that
   // knows nothing about products does not erase them.
   const [row] = await tx<ProfileRow[]>`
@@ -230,6 +238,43 @@ export async function setProfile(
   });
 
   return row;
+}
+
+const MAX_PRODUCTS = 50;
+
+async function mergeProfile(tx: Tx, input: Parameters<typeof setProfile>[1]): Promise<ProfileRow> {
+  const [current] = await tx<ProfileRow[]>`select * from company_profiles where company_id = ${input.companyId}`;
+  const union = (old: string[] | undefined, add: string[] | undefined, key = (v: string) => v) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of [...(old ?? []), ...(add ?? [])]) {
+      const k = key(v);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(v);
+    }
+    return out;
+  };
+  const quality =
+    current?.quality === 'full' || input.quality === 'full'
+      ? 'full'
+      : (input.quality ?? current?.quality ?? undefined);
+
+  return setProfile(tx, {
+    tenantId: input.tenantId,
+    companyId: input.companyId,
+    ...(input.buys ? { buys: input.buys } : {}),
+    ...(input.sells ? { sells: input.sells } : {}),
+    ...(input.sector ? { sector: input.sector } : {}),
+    ...(input.city ? { city: input.city } : {}),
+    ...(input.size ? { size: input.size } : {}),
+    products: union(current?.products, input.products, foldText).slice(0, MAX_PRODUCTS),
+    roles: union(current?.roles, input.roles) as ProfileRole[],
+    cities: union(current?.cities, input.cities, foldText),
+    countries: union(current?.countries, input.countries),
+    ...(quality ? { quality } : {}),
+    ...(input.profiledAt ? { profiledAt: input.profiledAt } : {}),
+  });
 }
 
 export type InviteResult =

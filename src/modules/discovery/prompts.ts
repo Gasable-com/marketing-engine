@@ -171,3 +171,85 @@ export const Triage = z.object({
   ),
 });
 export type Verdict = z.infer<typeof Triage>['verdicts'][number];
+
+// ---------------------------------------------------------------------------
+// extract
+// ---------------------------------------------------------------------------
+
+export const MIN_QUOTE = 12;
+
+const quoted = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { value: { type: 'string' }, quote: { type: 'string' }, url: { type: 'string' } },
+  required: ['value', 'quote', 'url'],
+};
+
+export const extractPrompt = {
+  system: [
+    'You read one company\'s web pages (or, when it has no website, its Google Maps listing) for a B2B company search in Saudi Arabia and the Gulf.',
+    'You are given the product, the side of the search (suppliers that sell it, or buyers that would use it), the personas being searched for (each signal numbered from 0), the country, the Maps listing if any, and the pages: each with its url and text.',
+    'Say whether this is one real company (not a directory, marketplace, news site or job board), which persona it fits best and how well (strong, weak, or none), and extract its name (and Arabic name when the pages give one), the products or services it offers, its supply-chain roles and its cities.',
+    'EVERY fact must carry a quote copied exactly, character for character, from one page\'s text, at least ' + MIN_QUOTE + ' characters long, and the url of that page exactly as given. For a Maps-only company the url is the listing\'s url and quotes come from the listing. Never paraphrase a quote, never invent one, never cite a url you were not given. A fact you cannot quote, leave out.',
+    'Evidence: up to 6 items, each a short claim showing the persona fits, with its quote, url, and the index of the persona signal it shows (or null).',
+    'Roles must be from: ' + PROFILE_ROLES.join(', ') + '.',
+    'reason: one short line on why the company fits, or why it is not saved (e.g. "a directory, not a company").',
+    DATA_ONLY,
+  ].join('\n'),
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      isCompany: { type: 'boolean' },
+      name: { anyOf: [quoted, { type: 'null' }] },
+      nameAr: { anyOf: [quoted, { type: 'null' }] },
+      personaId: { type: ['string', 'null'] },
+      fit: { type: 'string', enum: ['strong', 'weak', 'none'] },
+      evidence: {
+        type: 'array',
+        maxItems: 6,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            signal: { type: ['integer', 'null'] },
+            claim: { type: 'string' },
+            quote: { type: 'string' },
+            url: { type: 'string' },
+          },
+          required: ['signal', 'claim', 'quote', 'url'],
+        },
+      },
+      products: { type: 'array', maxItems: 12, items: quoted },
+      roles: { type: 'array', items: { type: 'string', enum: [...PROFILE_ROLES] }, maxItems: 4 },
+      cities: { type: 'array', maxItems: 8, items: quoted },
+      reason: { type: 'string' },
+    },
+    required: ['isCompany', 'name', 'nameAr', 'personaId', 'fit', 'evidence', 'products', 'roles', 'cities', 'reason'],
+  },
+};
+
+const Quoted = z.object({ value: z.string().trim().min(1).max(300), quote: z.string(), url: z.string() });
+
+export const Extraction = z.object({
+  isCompany: z.boolean(),
+  name: Quoted.nullable(),
+  nameAr: Quoted.nullable(),
+  personaId: z.string().nullable(),
+  fit: z.enum(['strong', 'weak', 'none']),
+  evidence: z
+    .array(
+      z.object({
+        signal: z.number().int().nullable(),
+        claim: z.string().trim().min(1).max(300),
+        quote: z.string(),
+        url: z.string(),
+      }),
+    )
+    .max(6),
+  products: z.array(Quoted).max(12),
+  roles: z.array(z.string()).max(4),
+  cities: z.array(Quoted).max(8),
+  reason: z.string(),
+});
+export type Extraction = z.infer<typeof Extraction>;

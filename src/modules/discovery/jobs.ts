@@ -2,12 +2,13 @@ import { withTenant, type Tx } from '../../db/client.js';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { emit } from '../../spine/events/index.js';
-import { ask, bridgeConfigured } from './claude.js';
+import { ask, bridgeConfigured, reserveClaudeCall } from './claude.js';
 import { DiscoveryError, PermanentError, UsageLimitError } from './errors.js';
 import { getFinder, type FinderQuery } from './finder/index.js';
 import { Identified, Personas, identifyPrompt, personasPrompt, type Persona } from './prompts.js';
 import { namesAPlace, placeWords } from './search/country.js';
 import { runSearch, runTriage, searchNeeds } from './search/stages.js';
+import { runReadExtract } from './extract/stage.js';
 
 /**
  * Discovery jobs: an operator's search for a product, on one side (suppliers
@@ -271,6 +272,7 @@ const identify: PlanStage = {
   name: 'identify',
   needs: bridgeConfigured,
   async run(job) {
+    if (!(await reserveClaudeCall(job.tenant_id, job.id))) throw new PermanentError('claude budget spent');
     const raw = await ask('identify', {
       system: identifyPrompt.system,
       schema: identifyPrompt.schema,
@@ -298,6 +300,7 @@ const personas: PlanStage = {
   needs: bridgeConfigured,
   async run(job) {
     if (!job.identified) throw new Error('personas: the job has no identified product');
+    if (!(await reserveClaudeCall(job.tenant_id, job.id))) throw new PermanentError('claude budget spent');
     const raw = await ask('personas', {
       system: personasPrompt.system,
       schema: personasPrompt.schema,
@@ -480,68 +483,154 @@ function secondsUntil(at: Date): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Rank the pool for the task's country with the `products` finder, and make
- * the result the task's results: a rerun replaces them.
+ * Rank a task's results in two tiers.
  *
- * A buyers job is not ranked here: this matches what companies sell, which
- * would list sellers of the product as its buyers. Ranking what a buyers
- * search found comes with reading and extraction.
+ * Found: the companies this task found and saved (or found again with a
+ * fresh profile), scored by persona fit and the share of the persona's
+ * signals their checked evidence shows, plus profile quality and freshness.
+ *
+ * Pool: companies already in the pool that this task did not find, from the
+ * `products` finder, always below the found ones. A suppliers search matches
+ * the product's own names; a buyers search matches the personas' Maps
+ * keywords (kinds of company), never the product, which would list sellers.
+ *
+ * The weights are constants until tuned against reviewed results; then they
+ * move to rule rows.
  */
+const FIT_WEIGHT = { strong: 0.6, weak: 0.3 } as const;
+const SIGNALS_WEIGHT = 0.2;
+const QUALITY_WEIGHT = { full: 0.1, thin: 0.05 } as const;
+const FRESH_WEIGHT = 0.1;
+
+type FoundRow = {
+  company_id: string;
+  persona_id: string | null;
+  fit: 'strong' | 'weak' | null;
+  evidence: { signal: number | null; claim: string; quote: string; url: string }[];
+  quality: 'full' | 'thin' | null;
+  age_days: number | null;
+};
+
+type ResultRow = {
+  company_id: string;
+  score: number;
+  reasons: string[];
+  tier: 'found' | 'pool';
+  persona_id: string | null;
+  fit: 'strong' | 'weak' | null;
+  evidence: unknown[];
+};
+
+function freshness(ageDays: number | null): number {
+  if (ageDays === null) return 0;
+  if (ageDays <= 90) return 1;
+  if (ageDays >= 365) return 0;
+  return (365 - ageDays) / (365 - 90);
+}
+
 const rank: TaskStage = {
   name: 'rank',
   async run(job, task) {
-    if (job.side === 'buyers') return { skipped_rank_buyers: 1 };
+    const personas = await withTenant(job.tenant_id, (tx) => tx<PersonaRow[]>`
+      select * from discovery_personas where job_id = ${job.id} order by position
+    `);
+    const byId = new Map(personas.map((p) => [p.id, p]));
 
-    return withTenant(job.tenant_id, async (tx) => {
-      const finder = getFinder('products');
-      const query: FinderQuery = {
-        products: [job.product, ...job.terms],
-        country: task.country,
-        limit: job.result_limit,
-      };
+    const found = await withTenant(job.tenant_id, (tx) => tx<FoundRow[]>`
+      select distinct on (d.company_id)
+             d.company_id::text, d.persona_ids[1]::text as persona_id, d.fit, d.evidence,
+             p.quality, extract(epoch from now() - p.profiled_at)::float8 / 86400 as age_days
+      from discovery_candidates d
+      left join company_profiles p on p.company_id = d.company_id
+      where d.task_id = ${task.id} and d.status = 'extracted' and d.company_id is not null
+      order by d.company_id, case d.fit when 'strong' then 0 else 1 end
+    `);
 
-      const startedAt = Date.now();
-      const candidates = await finder.find(tx, job.tenant_id, query);
+    const foundRows: ResultRow[] = found.map((f) => {
+      const persona = f.persona_id ? byId.get(f.persona_id) : undefined;
+      const signals = new Set(f.evidence.map((e) => e.signal).filter((s): s is number => s !== null));
+      const share = persona && persona.signals.length ? signals.size / persona.signals.length : 0;
+      const fresh = freshness(f.age_days);
+      const score =
+        (f.fit ? FIT_WEIGHT[f.fit] : 0) +
+        SIGNALS_WEIGHT * share +
+        (f.quality ? QUALITY_WEIGHT[f.quality] : 0) +
+        FRESH_WEIGHT * fresh;
+      const reasons = [
+        ...(persona ? [`persona: ${persona.name}`] : []),
+        ...f.evidence.map((e) => `"${e.quote}" — ${e.url}`),
+        ...(f.quality ? [`profile: ${f.quality}`] : []),
+        ...(f.evidence.length === 0 && f.fit ? [`${f.fit} fit from search results`] : []),
+        ...(fresh > 0 && f.age_days !== null ? [`profiled ${Math.max(0, Math.floor(f.age_days))} days ago`] : []),
+      ];
+      return { company_id: f.company_id, score, reasons, tier: 'found', persona_id: f.persona_id, fit: f.fit, evidence: f.evidence };
+    });
+    foundRows.sort((a, b) => b.score - a.score);
+    const kept = foundRows.slice(0, job.result_limit);
 
-      await tx`
-        insert into finder_runs (tenant_id, finder, query, result_count, duration_ms)
-        values (${job.tenant_id}, ${finder.name}, ${tx.json(query as never)},
-                ${candidates.length}, ${Date.now() - startedAt})
-      `;
-
-      await tx`delete from discovery_results where task_id = ${task.id}`;
-      if (candidates.length > 0) {
-        const rows = candidates.map((c, i) => ({
+    // The pool below what was found.
+    let pool: ResultRow[] = [];
+    const room = job.result_limit - kept.length;
+    const terms =
+      job.side === 'buyers' ? [...new Set(personas.flatMap((p) => p.places_terms))] : [job.product, ...job.terms];
+    if (room > 0 && terms.length > 0) {
+      pool = await withTenant(job.tenant_id, async (tx) => {
+        const finder = getFinder('products');
+        const query: FinderQuery = {
+          products: terms,
+          country: task.country,
+          limit: room,
+          excludeCompanyIds: kept.map((k) => k.company_id),
+        };
+        const startedAt = Date.now();
+        const candidates = await finder.find(tx, job.tenant_id, query);
+        await tx`
+          insert into finder_runs (tenant_id, finder, query, result_count, duration_ms)
+          values (${job.tenant_id}, ${finder.name}, ${tx.json(query as never)},
+                  ${candidates.length}, ${Date.now() - startedAt})
+        `;
+        return candidates.map((c) => ({
           company_id: c.companyId,
-          rank: i + 1,
           score: c.score,
           reasons: c.reasons,
+          tier: 'pool' as const,
+          persona_id: null,
+          fit: null,
+          evidence: [],
         }));
-        await tx`
-          insert into discovery_results (tenant_id, job_id, task_id, company_id, rank, score, reasons)
-          select ${job.tenant_id}, ${job.id}, ${task.id}, r.company_id, r.rank, r.score,
-                 array(select e.reason
-                       from jsonb_array_elements_text(r.reasons) with ordinality as e (reason, n)
-                       order by e.n)
-          from jsonb_to_recordset(${tx.json(rows as never)})
-            as r (company_id uuid, rank int, score real, reasons jsonb)
-        `;
-      }
+      });
+    }
 
-      return { ranked: candidates.length };
+    const rows = [...kept, ...pool].map((r, i) => ({ ...r, rank: i + 1 }));
+    await withTenant(job.tenant_id, async (tx) => {
+      await tx`delete from discovery_results where task_id = ${task.id}`;
+      if (rows.length === 0) return;
+      await tx`
+        insert into discovery_results
+          (tenant_id, job_id, task_id, company_id, rank, score, reasons, tier, persona_id, fit, evidence)
+        select ${job.tenant_id}, ${job.id}, ${task.id}, r.company_id, r.rank, r.score,
+               array(select e.reason
+                     from jsonb_array_elements_text(r.reasons) with ordinality as e (reason, n)
+                     order by e.n),
+               r.tier, r.persona_id, r.fit, r.evidence
+        from jsonb_to_recordset(${tx.json(rows as never)})
+          as r (company_id uuid, rank int, score real, reasons jsonb, tier text,
+                persona_id uuid, fit text, evidence jsonb)
+      `;
     });
+
+    // Each result says its tier; the count is the whole ranking.
+    return { ranked: rows.length };
   },
 };
 
-/**
- * The stages a task runs through, in order: search the web and Maps for the
- * personas, triage what came back, rank. Step 20 adds reading in front of
- * rank. A plain array, not a plugin system.
- */
 const search: TaskStage = { name: 'search', needs: searchNeeds, run: runSearch };
 const triage: TaskStage = { name: 'triage', needs: searchNeeds, run: runTriage };
 
-const TASK_STAGES: readonly TaskStage[] = [search, triage, rank];
+// Reads only what triage kept, so without the providers it has nothing to do.
+const readExtract: TaskStage = { name: 'read_extract', run: runReadExtract };
+
+const TASK_STAGES: readonly TaskStage[] = [search, triage, readExtract, rank];
 
 /**
  * `discovery.task`: run one country of a job through its stages, then settle

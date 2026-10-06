@@ -81,6 +81,7 @@ export function clearProviders(): void {
     'DISCOVERY_MAX_QUERIES',
     'DISCOVERY_MAX_QUERIES_PER_JOB',
     'FIRECRAWL_URL',
+    'DISCOVERY_MAX_READS',
   ]) {
     delete process.env[k];
   }
