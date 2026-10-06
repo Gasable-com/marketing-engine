@@ -20,6 +20,8 @@ export type RowReading = {
   header: string[] | null;
   productIndex: number;
   categoryIndex: number | null;
+  /** `header`: picked by column name. `guess`: picked by what the cells look like. */
+  method: 'header' | 'guess';
 };
 
 const MAX_PRODUCT = 200;
@@ -27,11 +29,15 @@ const MAX_PRODUCT = 200;
 /** Column names that hold the product's name, best first. Compared folded. */
 const PRODUCT_HEADERS = [
   'product name',
+  'product title',
   'product',
   'item name',
   'item',
   'name',
   'title',
+  'product description',
+  'item description',
+  'description',
   'اسم المنتج',
   'المنتج',
   'منتج',
@@ -73,6 +79,16 @@ const STATUS_WORDS = new Set(
     'unavailable',
     'in stock',
     'out of stock',
+    'pending',
+    'approved',
+    'rejected',
+    'under review',
+    'archived',
+    'hidden',
+    'قيد المراجعة',
+    'مقبول',
+    'مرفوض',
+    'معلق',
     'نشط',
     'غير نشط',
     'مفعل',
@@ -85,22 +101,24 @@ const STATUS_WORDS = new Set(
 );
 
 export function readRow(text: string): RowReading | null {
+  // Keep trailing tabs: an empty last cell is still a cell. Drop the rule
+  // line under a markdown table's header.
   const lines = text
     .split(/\r?\n/)
-    .map((line) => line.replace(/\s+$/, ''))
-    .filter((line) => line.trim());
+    .map((line) => line.replace(/[ \r]+$/, ''))
+    .filter((line) => line.trim() && !/^[\s|:=+-]+$/.test(line));
   if (lines.length === 0) return null;
 
   const first = splitCells(lines[0]!);
   const second = lines[1] !== undefined ? splitCells(lines[1]) : null;
-  const headerHit = second ? columnOf(first, PRODUCT_HEADERS) : null;
 
-  // A first line naming a product column, above a row of the same width, is
-  // the header; anything else means the first line is the row itself.
-  if (!second || headerHit === null || second.length !== first.length) return guess(first, null);
+  if (!isHeader(first, second)) return guess(first, null);
+  // A header with no row under it says nothing about a product.
+  if (!second) return null;
 
-  const product = clip(second[headerHit] ?? '');
-  if (!product || !isNameLike(product)) return guess(second, first);
+  const productIndex = columnOf(first, PRODUCT_HEADERS);
+  const product = productIndex === null ? '' : clip(second[productIndex] ?? '');
+  if (productIndex === null || !product || !isNameLike(product)) return guess(second, first);
 
   const categoryIndex = columnOf(first, CATEGORY_HEADERS);
   const category = categoryIndex === null ? '' : clip(second[categoryIndex] ?? '');
@@ -109,9 +127,22 @@ export function readRow(text: string): RowReading | null {
     category: category || null,
     cells: second,
     header: first,
-    productIndex: headerHit,
+    productIndex,
     categoryIndex: category ? categoryIndex : null,
+    method: 'header',
   };
+}
+
+/**
+ * Whether the first line names columns rather than holding a product: it has
+ * a known column name, or it has no digits while the line under it does.
+ */
+function isHeader(first: string[], second: string[] | null): boolean {
+  if (columnOf(first, PRODUCT_HEADERS) !== null || columnOf(first, CATEGORY_HEADERS) !== null) {
+    return true;
+  }
+  const hasDigits = (cells: string[]) => cells.some((c) => /[\d٠-٩]/.test(c));
+  return second !== null && !hasDigits(first) && hasDigits(second);
 }
 
 /** No usable header: the longest name-like cell, then the next one. */
@@ -132,6 +163,7 @@ function guess(cells: string[], header: string[] | null): RowReading | null {
     header,
     productIndex: best.index,
     categoryIndex: category ? category.index : null,
+    method: 'guess',
   };
 }
 
@@ -149,8 +181,9 @@ function splitCells(line: string): string[] {
   return cells;
 }
 
+/** Column names compared loosely: `Name (EN)` and `* Product name:` count. */
 function columnOf(header: string[], names: string[]): number | null {
-  const folded = header.map(foldText);
+  const folded = header.map((cell) => foldText(cell.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')));
   for (const name of names) {
     const index = folded.indexOf(name);
     if (index >= 0) return index;
@@ -159,11 +192,21 @@ function columnOf(header: string[], names: string[]): number | null {
 }
 
 /** An amount with a currency on either side: `SAR 45`, `45.00 ر.س`, `$12`. */
-const CURRENCY = String.raw`(?:sar|aed|usd|egp|kwd|qar|bhd|omr|eur|ريال|درهم|ر\.?\s?س|د\.?\s?إ|\$|€)`;
+const CURRENCY = String.raw`(?:sar|sr|aed|usd|egp|kwd|qar|bhd|omr|eur|riyals?|ريال سعودي|ريال|درهم|ر\.?\s?س\.?|د\.?\s?إ\.?|\$|€)`;
 const PRICE = new RegExp(
   String.raw`^${CURRENCY}?\s*[\d٠-٩][\d٠-٩.,٫٬]*\s*${CURRENCY}?$`,
   'iu',
 );
+
+/** A quantity: a number and a unit, `12 kg`, `20 Liters`, `٥ لتر`. */
+const QUANTITY =
+  /^[\d٠-٩][\d٠-٩.,]*\s*(kg|kgs|g|gm|grams?|l|lt|ltr|liters?|litres?|ml|pcs?|pieces?|units?|ton|tons|كجم|كغ|كيلو|جم|جرام|لتر|مل|حبه|حبة|قطعه|قطعة|طن)\.?$/iu;
+
+/** A code, not a name: no spaces, upper-case letters with digits, `DSL-20L`. */
+const CODE = /^(?=.*\d)[A-Z0-9_./-]+$/;
+
+/** A stock line with a count: `In stock (12)`, `متاح ١٢`. */
+const STOCK = /^(in stock|out of stock|available|متاح|غير متاح)\s*[(:]?\s*[\d٠-٩]+\s*\)?$/iu;
 
 function letterCount(text: string): number {
   return (text.match(/\p{L}/gu) ?? []).length;
@@ -171,14 +214,15 @@ function letterCount(text: string): number {
 
 /**
  * Reads as a name: at least two letters, mostly letters, and not a URL, an
- * email address or a status. Ids, prices, dates and quantities fail on letters.
+ * email address, a status, a price, a quantity or a code. Ids and dates fail
+ * on letters.
  */
 function isNameLike(cell: string): boolean {
   const text = cell.trim();
   if (!text) return false;
   if (/^(https?:\/\/|www\.)/i.test(text) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return false;
   if (STATUS_WORDS.has(foldText(text))) return false;
-  if (PRICE.test(text)) return false;
+  if (PRICE.test(text) || QUANTITY.test(text) || CODE.test(text) || STOCK.test(text)) return false;
 
   const letters = letterCount(text);
   const visible = text.replace(/\s/g, '').length;

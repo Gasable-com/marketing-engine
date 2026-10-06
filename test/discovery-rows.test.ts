@@ -15,7 +15,56 @@ describe('reading a pasted row', () => {
       header: ['ID', 'Product Name', 'Category', 'Price', 'Status'],
       productIndex: 1,
       categoryIndex: 2,
+      method: 'header',
     });
+  });
+
+  it('keeps an empty last cell, so the row still lines up with its header', () => {
+    const reading = readRow('ID\tProduct Name\tCategory\tPrice\tActions\r\n1042\tDiesel fuel 20L\tFuel\t1,250.00\t\r\n');
+    expect(reading).toMatchObject({ product: 'Diesel fuel 20L', category: 'Fuel', method: 'header' });
+  });
+
+  it('reads the row, never the header, when the widths differ', () => {
+    const reading = readRow('ID\tProduct Name\tCategory\tNotes\tActions\n1042\tDiesel fuel 20L\tFuel');
+    expect(reading).toMatchObject({ product: 'Diesel fuel 20L', category: 'Fuel', method: 'header' });
+  });
+
+  it('matches column names loosely', () => {
+    expect(readRow('SKU\tProduct Title\tCategory\tPrice\nDSL-20L\tDiesel\tFuel\t45.00')).toMatchObject({
+      product: 'Diesel',
+      category: 'Fuel',
+      method: 'header',
+    });
+    expect(readRow('ID\tName (EN)\tName (AR)\tCategory\n7\tDiesel\tديزل\tFuel')).toMatchObject({
+      product: 'Diesel',
+      category: 'Fuel',
+    });
+    expect(readRow('SKU\tDescription\tQty\nDSL-20L\tGas oil for generators\t20 L')).toMatchObject({
+      product: 'Gas oil for generators',
+      category: null,
+    });
+  });
+
+  it('takes an unknown header for one when it has no digits and the row does', () => {
+    const reading = readRow('Code\tWhat\tKind\n1042\tDiesel fuel\tFuel');
+    expect(reading).toMatchObject({ product: 'Diesel fuel', header: ['Code', 'What', 'Kind'], method: 'guess' });
+  });
+
+  it('finds nothing in a header pasted alone', () => {
+    expect(readRow('ID\tProduct Name\tCategory\tPrice\tStatus')).toBeNull();
+  });
+
+  it('reads a markdown table', () => {
+    const reading = readRow('| ID | Product Name | Category |\n|---|---|---|\n| 1042 | Diesel fuel | Fuel |');
+    expect(reading).toMatchObject({ product: 'Diesel fuel', category: 'Fuel', method: 'header' });
+  });
+
+  it('passes over statuses, prices, quantities, codes and stock counts', () => {
+    expect(readRow('1042\tDiesel\tFuel\t45.00\tPending')).toMatchObject({ product: 'Diesel', category: 'Fuel' });
+    expect(readRow('1042\tديزل\t45 ريال سعودي\tنشط')).toMatchObject({ product: 'ديزل', category: null });
+    expect(readRow('1042\tDiesel\tIn stock (12)\tSR 45')).toMatchObject({ product: 'Diesel', category: null });
+    expect(readRow('1042\tLPG cylinder\t12 kg\t45.00 SAR')).toMatchObject({ product: 'LPG cylinder', category: null });
+    expect(readRow('DSL-20L\tDiesel\t20 Liters')).toMatchObject({ product: 'Diesel', category: null });
   });
 
   it('reads Arabic column names', () => {
@@ -31,6 +80,7 @@ describe('reading a pasted row', () => {
       header: null,
       productIndex: 1,
       categoryIndex: 2,
+      method: 'guess',
     });
   });
 
@@ -50,7 +100,7 @@ describe('reading a pasted row', () => {
 
   it('guesses from the row when the named column is empty', () => {
     const reading = readRow('ID\tName\tDescription\n9\t\tGas oil for generators');
-    expect(reading).toMatchObject({ product: 'Gas oil for generators', productIndex: 2 });
+    expect(reading).toMatchObject({ product: 'Gas oil for generators', productIndex: 2, method: 'guess' });
     expect(reading!.header).toEqual(['ID', 'Name', 'Description']);
   });
 

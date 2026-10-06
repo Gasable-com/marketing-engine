@@ -56,7 +56,8 @@ export function DiscoveryView({
       return result;
     },
     [tenantId, status, cursor],
-    10_000,
+    // Polling a later page would append it again; only the first page refreshes.
+    cursor ? undefined : 10_000,
   );
 
   return (
@@ -291,7 +292,7 @@ function Reading({ reading }: { reading: RowReading }) {
   return (
     <div>
       <div class="muted">
-        {reading.header ? 'read by column name' : 'no header line, so this is a guess — check it'}
+        {reading.method === 'header' ? 'read by column name' : 'this is a guess from what the cells look like — check it'}
       </div>
       <div class="cells">
         {reading.cells.map((cell, i) => (
@@ -453,14 +454,23 @@ function Results({ jobId, country, version }: { jobId: string; country: string; 
 
   useEffect(() => setCursor(undefined), [jobId, country, version]);
 
-  const page = useAsync(
-    async () => {
-      const result = await api.discoveryResults(jobId, { country, cursor, limit: 100 });
-      setRows((current) => (cursor ? [...current, ...result.items] : result.items));
-      return result;
-    },
+  // The rows are taken from the answer useAsync keeps, which is always the
+  // latest request's: a slower stale page can never land on top of a fresh one.
+  const answer = useAsync(
+    async () => ({ used: cursor, result: await api.discoveryResults(jobId, { country, cursor, limit: 100 }) }),
     [jobId, country, cursor, version],
   );
+  useEffect(() => {
+    if (answer.state.status !== 'ok') return;
+    const { used, result } = answer.state.data;
+    setRows((current) => (used ? [...current, ...result.items] : result.items));
+  }, [answer.state]);
+  const page = {
+    state:
+      answer.state.status === 'ok'
+        ? { status: 'ok' as const, data: answer.state.data.result }
+        : answer.state,
+  };
 
   return (
     <>

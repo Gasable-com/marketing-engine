@@ -411,6 +411,8 @@ export type RowReading = {
   header: string[] | null;
   productIndex: number;
   categoryIndex: number | null;
+  /** `header`: picked by column name. `guess`: picked by what the cells look like. */
+  method: 'header' | 'guess';
 };
 
 export type NewDiscoveryJob = {

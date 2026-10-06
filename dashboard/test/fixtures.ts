@@ -458,4 +458,5 @@ export const rowReading: RowReading = {
   header: ['ID', 'Product Name', 'Category', 'Price'],
   productIndex: 1,
   categoryIndex: 2,
+  method: 'header',
 };
