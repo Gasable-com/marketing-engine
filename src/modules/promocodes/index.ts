@@ -218,6 +218,87 @@ export async function validate(
   return { valid: true, discountAmount, promocodeId: promo.id, lines: computed.lines };
 }
 
+export type Description =
+  | { code: string; found: false }
+  | {
+      code: string;
+      found: true;
+      status: 'active' | 'scheduled' | 'paused' | 'ended' | 'exhausted';
+      kind: 'percent' | 'fixed';
+      percentBps: number | null;
+      amount: number | null;
+      currency: string;
+      maxDiscount: number | null;
+      minSubtotal: number | null;
+      skus: string[];
+      startsAt: Date;
+      endsAt: Date | null;
+      usesLeftForBuyer: number | null;
+    };
+
+/**
+ * What each code is, for a buyer's list of saved codes: one entry per code, in
+ * the order asked. Reads only, like validate, and never needs a cart, so it
+ * does not evaluate a code's own condition; validate stays the answer to
+ * whether a code works on a cart.
+ */
+export async function describe(
+  tx: Tx,
+  input: { tenantId: string; codes: string[]; buyerRef: string; at?: Date | undefined },
+): Promise<Description[]> {
+  const now = (input.at ?? new Date()).getTime();
+
+  const rows = await tx<PromocodeRow[]>`
+    select * from promocodes
+    where tenant_id = ${input.tenantId}
+      and upper(code) = any(${input.codes.map((c) => c.toUpperCase())})
+  `;
+  const byCode = new Map(rows.map((row) => [row.code.toUpperCase(), row]));
+
+  const result: Description[] = [];
+  for (const code of input.codes) {
+    const promo = byCode.get(code.toUpperCase());
+    if (!promo) {
+      result.push({ code, found: false });
+      continue;
+    }
+
+    const usage = await usageOf(tx, promo.id, input.buyerRef);
+    const { budget, discount } = promo;
+
+    let status: Extract<Description, { found: true }>['status'] = 'active';
+    if (promo.status !== 'active') status = promo.status;
+    else if (promo.ends_at && promo.ends_at.getTime() <= now) status = 'ended';
+    else if (promo.starts_at.getTime() > now) status = 'scheduled';
+    else if (
+      (budget.maxUses !== undefined && usage.uses >= budget.maxUses) ||
+      (budget.maxSpend !== undefined && usage.spend >= budget.maxSpend)
+    ) {
+      status = 'exhausted';
+    }
+
+    result.push({
+      code,
+      found: true,
+      status,
+      kind: discount.type,
+      percentBps: discount.type === 'percent' ? discount.value : null,
+      amount: discount.type === 'fixed' ? discount.value : null,
+      currency: promo.currency,
+      maxDiscount: discount.maxDiscount ?? null,
+      minSubtotal: discount.minSubtotal ?? null,
+      skus: discount.productIds ?? [],
+      startsAt: promo.starts_at,
+      endsAt: promo.ends_at,
+      usesLeftForBuyer:
+        budget.perBuyerMaxUses === undefined
+          ? null
+          : Math.max(0, budget.perBuyerMaxUses - usage.buyerUses),
+    });
+  }
+  return result;
+}
+
 /**
  * The code's own condition. Note the sense is the opposite of a rules-table
  * row: a platform `promo_eligibility` row denies when it matches, while a

@@ -463,6 +463,109 @@ describe('ledger selection', () => {
   });
 });
 
+describe('describe', () => {
+  type Described = { code: string; found: boolean; status?: string; usesLeftForBuyer?: number | null };
+
+  async function describeCodes(
+    codes: string[],
+    extra: Record<string, unknown> = {},
+    token: string | null = tokenA,
+  ): Promise<{ status: number; codes: Described[] }> {
+    const res = await request(
+      '/v1/promocodes/describe',
+      { method: 'POST', ...json({ codes, buyerRef: 'buyer-1', ...extra }) },
+      token,
+    );
+    const body = (await res.json()) as { codes: Described[] };
+    return { status: res.status, codes: body.codes };
+  }
+
+  it('answers each code in the order sent, with what the code is', async () => {
+    const product = '3f0c2a1e-9b7d-4c51-8a2e-6d4f1b0c9e72';
+    await createCode({
+      code: 'Pct10',
+      discount: { type: 'percent', value: 1000, maxDiscount: 20000, minSubtotal: 50000 },
+      endsAt: '2099-01-01T00:00:00Z',
+    });
+    await createCode({ code: 'FIXED50', discount: { type: 'fixed', value: 5000, productIds: [product] } });
+
+    const { status, codes } = await describeCodes(['NOPE', 'pct10', 'FIXED50']);
+    expect(status).toBe(200);
+    expect(codes).toEqual([
+      { code: 'NOPE', found: false },
+      {
+        code: 'pct10',
+        found: true,
+        status: 'active',
+        kind: 'percent',
+        percentBps: 1000,
+        amount: null,
+        currency: 'SAR',
+        maxDiscount: 20000,
+        minSubtotal: 50000,
+        skus: [],
+        startsAt: expect.any(String),
+        endsAt: '2099-01-01T00:00:00.000Z',
+        usesLeftForBuyer: null,
+      },
+      expect.objectContaining({
+        code: 'FIXED50',
+        kind: 'fixed',
+        percentBps: null,
+        amount: 5000,
+        maxDiscount: null,
+        minSubtotal: null,
+        skus: [product],
+        endsAt: null,
+      }),
+    ]);
+  });
+
+  it('says paused, ended, scheduled and exhausted', async () => {
+    const paused = await createCode({ code: 'PAUSED' });
+    await request(`/v1/promocodes/${paused.id}`, { method: 'PATCH', ...json({ status: 'paused' }) });
+    await createCode({ code: 'OVER', startsAt: '2020-01-01T00:00:00Z', endsAt: '2020-02-01T00:00:00Z' });
+    await createCode({ code: 'LATER', startsAt: '2099-01-01T00:00:00Z' });
+    await createCode({ budget: { maxUses: 1 } });
+    await reserveOrder('order-1', 80000, { buyerRef: 'buyer-2' });
+
+    const { codes } = await describeCodes(['PAUSED', 'OVER', 'LATER', 'SAVE10']);
+    expect(codes.map((c) => c.status)).toEqual(['paused', 'ended', 'scheduled', 'exhausted']);
+  });
+
+  it("counts this buyer's uses left, and gives a released one back", async () => {
+    await createCode({ budget: { perBuyerMaxUses: 2 } });
+    expect((await describeCodes(['SAVE10'])).codes[0]!.usesLeftForBuyer).toBe(2);
+
+    const held = await reserveOrder('order-1');
+    await reserveOrder('order-2', 80000, { buyerRef: 'buyer-2' });
+    expect((await describeCodes(['SAVE10'])).codes[0]!.usesLeftForBuyer).toBe(1);
+
+    await request(`/v1/redemptions/${held.body.redemption!.id}/release`, {
+      method: 'POST',
+      ...paid({ reason: 'cancelled' }),
+    });
+    expect((await describeCodes(['SAVE10'])).codes[0]!.usesLeftForBuyer).toBe(2);
+  });
+
+  it('writes nothing, takes at most 20 codes, and keeps tenants apart', async () => {
+    await createCode();
+    const before = await db()`select count(*)::int as n from events`;
+
+    await describeCodes(['SAVE10']);
+    const after = await db()`select count(*)::int as n from events`;
+    expect(after[0]!.n).toBe(before[0]!.n);
+    expect(await db()`select id from redemptions`).toHaveLength(0);
+
+    const tooMany = Array.from({ length: 21 }, (_, i) => `CODE${i}`);
+    expect((await describeCodes(tooMany)).status).toBe(400);
+
+    expect((await describeCodes(['SAVE10'], {}, tokenB)).codes).toEqual([
+      { code: 'SAVE10', found: false },
+    ]);
+  });
+});
+
 describe('tenant isolation', () => {
   it("hides tenant A's codes, redemptions and ledger from tenant B", async () => {
     const promo = await createCode();

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { withTenant } from '../../db/client.js';
 import {
   create,
+  describe,
   reconcile,
   release,
   reserve,
@@ -170,6 +171,21 @@ promocodes.post('/v1/promocodes/validate', async (c) => {
   // is still typing, and "no" is an answer, not an error.
   const result = await withTenant(tenantId, (tx) => validate(tx, { tenantId, ...parsed.data }));
   return c.json(result);
+});
+
+promocodes.post('/v1/promocodes/describe', async (c) => {
+  const parsed = z
+    .object({
+      codes: z.array(z.string().min(1).max(60)).min(1).max(20),
+      buyerRef: z.string().min(1).max(200),
+      at: z.coerce.date().optional(),
+    })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+
+  const tenantId = c.get('tenantId');
+  const result = await withTenant(tenantId, (tx) => describe(tx, { tenantId, ...parsed.data }));
+  return c.json({ codes: result });
 });
 
 promocodes.post('/v1/redemptions', async (c) => {
