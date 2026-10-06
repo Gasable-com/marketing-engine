@@ -10,7 +10,7 @@ The engine service serves only JSON. An operator dashboard lives in `dashboard/`
 ## Rules (non-negotiable)
 1. Keep it simple. The smallest thing that works. If you are about to add a dependency, abstraction or config option the current step does not need, don't.
 2. One deployable, one database. Postgres holds data, queue (pg-boss), events and rules. No Redis, no broker, no second datastore.
-3. Every tenant-owned table has `tenant_id` and RLS. The prospect-pool tables (`companies`, `company_identifiers`) are shared across tenants by design: readable by all, written only through `registry.upsert`. Everything a tenant says *about* a company lives in tenant-scoped tables.
+3. Every tenant-owned table has `tenant_id` and RLS. The prospect-pool tables (`companies`, `company_identifiers`) are shared across tenants by design: readable by all, written only through `registry.upsert`. `search_queries` (a cache of public search results, no tenant data) is shared too, written only by the discovery search adapter. Everything a tenant says *about* a company lives in tenant-scoped tables.
 4. Modules own their tables and never read another module's tables. Cross-module calls go through the module's service interface only.
 5. `can_send()` is the only path to a provider. Nothing bypasses it.
 6. Every module appends to `events`. Nothing else is the source of truth for "what happened".
