@@ -49,7 +49,7 @@ export type SourceRow = {
   id: string;
   company_id: string;
   tenant_id: string | null;
-  source_type: "rfq" | "import" | "api" | "lookup";
+  source_type: "rfq" | "import" | "api" | "lookup" | "web" | "maps";
   source_ref: string | null;
   data: Record<string, unknown>;
   recorded_at: Date;
@@ -66,7 +66,7 @@ export type UpsertInput = {
   country?: string | undefined;
   identifiers: RawIdentifier[];
   source: {
-    type: "rfq" | "import" | "api" | "lookup";
+    type: "rfq" | "import" | "api" | "lookup" | "web" | "maps";
     ref?: string | undefined;
     tenantId?: string | undefined;
     data?: Record<string, unknown> | undefined;

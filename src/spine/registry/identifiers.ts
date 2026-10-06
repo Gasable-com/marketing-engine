@@ -1,15 +1,16 @@
 import { env } from '../../env.js';
 import { normalize } from '../contacts/normalize.js';
 
-export const IDENTIFIER_TYPES = ['cr', 'vat', 'domain', 'phone', 'email'] as const;
+export const IDENTIFIER_TYPES = ['cr', 'vat', 'domain', 'phone', 'email', 'gmaps'] as const;
 export type IdentifierType = (typeof IDENTIFIER_TYPES)[number];
 
 /**
  * Strong identifiers belong to exactly one company, so two records sharing one
  * are the same company and get merged. Weak ones link but never merge: a phone
- * number or a shared mailbox moves between companies over time.
+ * number or a shared mailbox moves between companies over time. A Google Maps
+ * place id names one place, so it is strong.
  */
-export const STRONG_TYPES: readonly IdentifierType[] = ['cr', 'vat', 'domain'];
+export const STRONG_TYPES: readonly IdentifierType[] = ['cr', 'vat', 'domain', 'gmaps'];
 
 export function isStrong(type: IdentifierType): boolean {
   return STRONG_TYPES.includes(type);
@@ -27,13 +28,79 @@ const FREE_MAIL = new Set([
   'protonmail.com',
 ]);
 
+/**
+ * Registrable domains that host many companies: shop builders, social
+ * networks, link pages and free site hosts. A URL on one of them says where a
+ * company has a page, not which company it is, so it never identifies one.
+ */
+export const SHARED_HOSTS: ReadonlySet<string> = new Set([
+  'salla.sa',
+  'salla.com',
+  'zid.store',
+  'zid.sa',
+  'instagram.com',
+  'facebook.com',
+  'linkedin.com',
+  'x.com',
+  'twitter.com',
+  'tiktok.com',
+  'snapchat.com',
+  'youtube.com',
+  'linktr.ee',
+  'wa.me',
+  'whatsapp.com',
+  't.me',
+  'business.site',
+  'wixsite.com',
+  'blogspot.com',
+  'wordpress.com',
+  'google.com',
+  'myshopify.com',
+  'manus.space',
+  'vercel.app',
+  'netlify.app',
+  'github.io',
+  'haraj.com.sa',
+  'opensooq.com',
+]);
+
+/**
+ * Public suffixes of two labels, kept short and explicit rather than pulling
+ * in the whole public suffix list. Every other suffix counts as one label.
+ */
+const TWO_LEVEL_SUFFIXES = new Set([
+  'com.sa',
+  'net.sa',
+  'org.sa',
+  'gov.sa',
+  'edu.sa',
+  'med.sa',
+  'sch.sa',
+  'co.ae',
+  'com.ae',
+  'net.ae',
+  'org.ae',
+  'gov.ae',
+  'ac.ae',
+  'com.eg',
+  'com.tr',
+  'co.uk',
+  'com.cn',
+  'co.in',
+]);
+
 /** The marketplace's own domain identifies the marketplace, not a counterparty. */
 function ownDomain(): string | undefined {
-  return env().PLATFORM_DOMAIN?.trim().toLowerCase() || undefined;
+  const own = env().PLATFORM_DOMAIN?.trim();
+  return own ? (normalizeDomain(own) ?? undefined) : undefined;
+}
+
+export function isSharedHost(domain: string): boolean {
+  return SHARED_HOSTS.has(domain);
 }
 
 export function isUselessDomain(domain: string): boolean {
-  return FREE_MAIL.has(domain) || domain === ownDomain();
+  return FREE_MAIL.has(domain) || isSharedHost(domain) || domain === ownDomain();
 }
 
 export type RawIdentifier = { type: string; value: string };
@@ -86,6 +153,12 @@ export function normalizeIdentifiers(
           rejected.push({ type, value, reason: 'not a domain' });
           break;
         }
+        // The caller's URL is not lost: upsert keeps every rejected input,
+        // value and all, in the source's data.
+        if (isSharedHost(domain)) {
+          rejected.push({ type, value, reason: 'shared host' });
+          break;
+        }
         if (isUselessDomain(domain)) {
           rejected.push({ type, value, reason: 'identifies nobody' });
           break;
@@ -116,8 +189,20 @@ export function normalizeIdentifiers(
         }
         add('email', email);
 
-        const domain = email.slice(email.indexOf('@') + 1);
-        if (!isUselessDomain(domain)) add('domain', domain);
+        // A mailbox at a free-mail provider or a shared host says nothing
+        // about the company, so it yields no domain.
+        const domain = normalizeDomain(email.slice(email.indexOf('@') + 1));
+        if (domain && !isUselessDomain(domain)) add('domain', domain);
+        break;
+      }
+
+      case 'gmaps': {
+        // A place id or cid exactly as Google gave it: case matters.
+        if (!/^[A-Za-z0-9:_-]{1,200}$/.test(value)) {
+          rejected.push({ type, value, reason: 'not a Google Maps place id' });
+          break;
+        }
+        add('gmaps', value);
         break;
       }
 
@@ -129,16 +214,26 @@ export function normalizeIdentifiers(
   return { identifiers, rejected };
 }
 
-/** Strip scheme, credentials, www., port and path down to the bare host. */
+/**
+ * The registrable domain: scheme, credentials, port and path stripped, then
+ * every subdomain down to the label before the public suffix. A shop's
+ * `www.diesel.example.com` and its mail's `example.com` are one company.
+ */
 export function normalizeDomain(value: string): string | null {
   let host = value.trim().toLowerCase();
   host = host.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
   host = host.replace(/^[^/@]*@/, '');
   host = host.split(/[/?#]/)[0] ?? '';
   host = host.split(':')[0] ?? '';
-  host = host.replace(/^www\./, '');
   host = host.replace(/\.$/, '');
 
   if (!host || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)) return null;
-  return host;
+  // An address is not a domain, and its last two numbers are not one either.
+  if (/^\d+(\.\d+)+$/.test(host)) return null;
+
+  const labels = host.split('.');
+  const keep = TWO_LEVEL_SUFFIXES.has(labels.slice(-2).join('.')) ? 3 : 2;
+  // A bare public suffix such as `com.sa` names nobody.
+  if (labels.length < keep) return null;
+  return labels.slice(-keep).join('.');
 }
