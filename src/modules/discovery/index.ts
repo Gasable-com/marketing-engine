@@ -9,6 +9,7 @@ import { activeFinder, type Candidate, type FinderQuery } from './finder/index.j
 
 export * from './finder/index.js';
 export * from './jobs.js';
+export { readRow, type RowReading } from './rows.js';
 export { DiscoveryError } from './errors.js';
 
 const DEFAULT_INVITE_DAYS = 14;

@@ -5,6 +5,7 @@ import {
   MAX_COUNTRIES,
   MAX_RESULT_LIMIT,
   createJob,
+  readRow,
 } from '../../../modules/discovery/index.js';
 import { listQuery, page } from './shared.js';
 
@@ -44,6 +45,23 @@ discoveryOperator.post('/internal/discovery/jobs', async (c) => {
 
   const created = await withTenant(tenantId, (tx) => createJob(tx, { tenantId, ...input }));
   return c.json((await oneJob(created.job.id))!, 201);
+});
+
+/**
+ * What a pasted table row says the product is, before a job is created from
+ * it, so the operator can see and correct the reading.
+ */
+discoveryOperator.post('/internal/discovery/read-row', async (c) => {
+  const parsed = z
+    .object({ row: z.string().min(1).max(5000) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+
+  const reading = readRow(parsed.data.row);
+  if (!reading) {
+    return c.json({ error: 'no_product', message: 'no cell in that row reads as a product name' }, 400);
+  }
+  return c.json(reading);
 });
 
 discoveryOperator.get('/internal/discovery/jobs', async (c) => {
