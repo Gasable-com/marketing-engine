@@ -201,7 +201,7 @@ tr.clickable { cursor: pointer; }
 /* --------------------------------------------------------------- filters */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
 .filters label { color: var(--ink-muted); font-size: 11px; display: flex; gap: 4px; align-items: center; }
-input, select, button {
+input, select, button, textarea {
   font: inherit;
   color: var(--ink);
   background: var(--surface);
@@ -209,7 +209,7 @@ input, select, button {
   border-radius: var(--radius);
   padding: 3px 6px;
 }
-input:focus-visible, select:focus-visible, button:focus-visible {
+input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--series-1);
   outline-offset: 1px;
 }
@@ -330,3 +330,13 @@ pre.raw {
   color: var(--ink-2);
 }
 tr[aria-selected='true'] td { background: var(--raised); }
+
+/* ------------------------------------------------------------- forms */
+.form { display: grid; gap: 10px; max-width: 760px; }
+.form label { display: grid; gap: 4px; color: var(--ink-muted); font-size: 11px; }
+.form textarea { min-height: 72px; resize: vertical; font-family: var(--mono, monospace); }
+.form .actions { display: flex; gap: 8px; align-items: center; }
+.cells { display: flex; flex-wrap: wrap; gap: 4px; }
+.cell { border: 1px solid var(--axis); border-radius: var(--radius); padding: 1px 6px; }
+.cell.picked { border-color: var(--series-1); color: var(--series-1); }
+.reasons { margin: 0; padding-left: 16px; }

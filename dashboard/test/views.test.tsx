@@ -37,6 +37,11 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         campaigns: () => ok({ items: fixtures.campaigns, nextCursor: null }),
         campaign: () => ok(fixtures.campaignDetail),
         recipients: () => ok({ items: fixtures.recipients, nextCursor: null }),
+        discoveryJobs: () => ok({ items: fixtures.discoveryJobs, nextCursor: null }),
+        discoveryJob: () => ok(fixtures.discoveryJobDetail),
+        discoveryResults: () => ok({ items: fixtures.discoveryResults, nextCursor: null }),
+        createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
+        readRow: () => ok(fixtures.rowReading),
         streamUrl: () => '/api/stream',
         ...overrides,
       },
@@ -137,6 +142,43 @@ describe('views render', () => {
     mockApi();
     const { MetricsView } = await import('../src/views/metrics.js');
     expect(render(<MetricsView />)).toContain('Metrics');
+  });
+});
+
+describe('discovery', () => {
+  it('lists searches and offers a new one', async () => {
+    mockApi();
+    const { DiscoveryView } = await import('../src/views/discovery.js');
+    const html = render(<DiscoveryView tenantId="" status="" onFilters={() => {}} />);
+    expect(html).toContain('Discovery');
+    expect(html).toContain('New search');
+  });
+
+  it('shows the new-search form with the row box and the pool-only note', async () => {
+    mockApi();
+    const { NewDiscoveryView } = await import('../src/views/discovery.js');
+    const html = render(<NewDiscoveryView />);
+    expect(html).toContain('Read row');
+    expect(html).toContain('textarea');
+    expect(html).toContain('ranks the companies already in the pool');
+  });
+
+  it("renders a job with its tasks, a task's error and the ranked results", async () => {
+    mockApi();
+    const { DiscoveryJob } = await import('../src/views/discovery.js');
+    const html = render(
+      <DiscoveryJob detail={fixtures.discoveryJobDetail} loadedAt={null} country="" onCountry={() => {}} />,
+    );
+    expect(html).toContain('ديزل');
+    expect(html).toContain('finder exploded');
+    expect(html).toContain('rank');
+    expect(html).toContain('results');
+  });
+
+  it('loads a job by id', async () => {
+    mockApi();
+    const { DiscoveryJobView } = await import('../src/views/discovery.js');
+    expect(render(<DiscoveryJobView id="x" country="" onCountry={() => {}} />)).toContain('loading');
   });
 });
 
