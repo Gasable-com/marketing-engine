@@ -162,7 +162,7 @@ describe('discovery', () => {
     expect(html).toContain('Read row');
     expect(html).toContain('Find buyers');
     expect(html).toContain('textarea');
-    expect(html).toContain('ranks only the companies already in the pool');
+    expect(html).toContain('only ranks companies already in the pool');
   });
 
   it("renders a job with its tasks, a task's error and the ranked results", async () => {

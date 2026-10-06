@@ -432,6 +432,12 @@ export type DiscoveryResult = {
   score: number;
   reasons: string[];
   country: string;
+  /** `found`: this search found and read it. `pool`: already in the pool, matched. */
+  tier?: 'found' | 'pool';
+  persona?: { id: string; name: string } | null;
+  fit?: 'strong' | 'weak' | null;
+  /** Quotes checked against the page they came from. */
+  evidence?: { claim: string; quote: string; url: string }[];
   company: { id: string; name: string; country: string | null };
   profile: {
     products: string[];

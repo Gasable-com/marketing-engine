@@ -116,7 +116,8 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
   if (!job) return c.json({ error: 'not found' }, 404);
 
   const rows = await sql<ResultRow[]>`
-    select r.id::text as id, r.rank, r.score, r.reasons, k.country,
+    select r.id::text as id, r.rank, r.score, r.reasons, k.country, r.tier, r.fit, r.evidence,
+           r.persona_id::text as persona_id, ps.name as persona_name,
            c.id::text as company_id, c.name as company_name, c.country as company_country,
            p.company_id is not null as has_profile, p.products, p.roles, p.cities,
            p.quality, p.profiled_at,
@@ -130,6 +131,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
     join discovery_tasks k on k.id = r.task_id
     join companies c on c.id = r.company_id
     left join company_profiles p on p.company_id = c.id
+    left join discovery_personas ps on ps.id = r.persona_id
     where r.job_id = ${id.data}
       ${q.data.country ? sql`and k.country = ${q.data.country}` : sql``}
       ${q.data.cursor ? sql`and (r.rank, r.id) > (select rank, id from discovery_results where id = ${q.data.cursor})` : sql``}
@@ -145,6 +147,10 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
         score: r.score,
         reasons: r.reasons,
         country: r.country,
+        tier: r.tier,
+        persona: r.persona_id ? { id: r.persona_id, name: r.persona_name } : null,
+        fit: r.fit,
+        evidence: r.evidence.map((e) => ({ claim: e.claim, quote: e.quote, url: e.url })),
         company: { id: r.company_id, name: r.company_name, country: r.company_country },
         profile: r.has_profile
           ? {
@@ -173,7 +179,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {
       status: z
         .string()
         .transform((v) => v.split(',').map((x) => x.trim()).filter(Boolean))
-        .pipe(z.array(z.enum(['new', 'kept', 'dropped'])).min(1))
+        .pipe(z.array(z.enum(['new', 'kept', 'dropped', 'extracted', 'not_saved', 'failed'])).min(1))
         .optional(),
     })
     .safeParse(c.req.query());
@@ -183,16 +189,17 @@ discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {
   const [job] = await sql`select id from discovery_jobs where id = ${id.data}`;
   if (!job) return c.json({ error: 'not found' }, 404);
 
-  // Kept first, then new, then dropped; the strongest fits first among the kept.
+  // Saved first, then kept, then the rest; the strongest fits first.
   const order = sql`
-    case d.status when 'kept' then 0 when 'new' then 1 else 2 end,
+    case d.status when 'extracted' then 0 when 'kept' then 1 when 'new' then 2
+                  when 'not_saved' then 3 when 'failed' then 4 else 5 end,
     case d.fit when 'strong' then 0 when 'weak' then 1 else 2 end,
     d.created_at, d.id
   `;
   const rows = await sql<Record<string, unknown>[]>`
     select d.id::text as id, k.country, d.kind, d.domain, d.gmaps, d.name, d.url, d.phone,
            d.address, d.category, d.snippets, d.fit, d.status, d.reason,
-           d.company_id::text as "companyId",
+           d.company_id::text as "companyId", d.evidence,
            coalesce((
              select json_agg(json_build_object('id', p.id, 'name', p.name) order by p.position)
              from discovery_personas p where p.id = any(d.persona_ids)
@@ -218,6 +225,11 @@ type ResultRow = {
   score: number;
   reasons: string[];
   country: string;
+  tier: 'found' | 'pool';
+  fit: 'strong' | 'weak' | null;
+  evidence: { claim: string; quote: string; url: string }[];
+  persona_id: string | null;
+  persona_name: string | null;
   company_id: string;
   company_name: string;
   company_country: string | null;

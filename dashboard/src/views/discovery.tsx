@@ -33,7 +33,7 @@ const LIVE_MS = 3000;
 
 /** Said wherever a search's reach matters: it does not go to the web yet. */
 const POOL_ONLY =
-  'Until web search is switched on, a search ranks only the companies already in the pool, and a buyers search ranks nothing yet.';
+  'Without the search providers switched on, a search only ranks companies already in the pool by their profiles.';
 
 type Filters = { tenantId: string; status: string };
 
@@ -604,6 +604,7 @@ function Results({ jobId, country, version }: { jobId: string; country: string; 
               <th>company</th>
               <th>country</th>
               <th class="num">score</th>
+              <th>persona</th>
               <th>why</th>
               <th>profile</th>
               <th>identifiers</th>
@@ -620,11 +621,31 @@ function Results({ jobId, country, version }: { jobId: string; country: string; 
                 <td class="mono">{r.country}</td>
                 <td class="num">{r.score.toFixed(2)}</td>
                 <td>
-                  <ul class="reasons">
-                    {r.reasons.map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
+                  {r.persona ? r.persona.name : <span class="muted">—</span>}
+                  {r.fit ? <div class="muted">{r.fit} fit</div> : null}
+                  <div class="muted">{r.tier === 'found' ? 'found by this search' : 'already in the pool'}</div>
+                </td>
+                <td>
+                  {r.evidence?.length ? (
+                    <ul class="reasons">
+                      {r.evidence.map((e) => (
+                        <li key={e.quote}>
+                          {e.claim}: “{e.quote}”{' '}
+                          {/^https?:\/\//.test(e.url) ? (
+                            <a href={e.url} target="_blank" rel="noopener noreferrer">
+                              page
+                            </a>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <ul class="reasons">
+                      {r.reasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  )}
                 </td>
                 <td>
                   {r.profile ? (
@@ -671,8 +692,8 @@ function Candidates({ jobId, country, version }: { jobId: string; country: strin
   const [showDropped, setShowDropped] = useState(false);
   const [rows, setRows] = useState<DiscoveryCandidate[]>([]);
   const [cursor, setCursor] = useState<string | undefined>(undefined);
-  // Kept and not-yet-triaged by default; everything with the toggle.
-  const status = showDropped ? '' : 'kept,new';
+  // Everything but what triage dropped, by default; everything with the toggle.
+  const status = showDropped ? '' : 'new,kept,extracted,not_saved,failed';
 
   useEffect(() => setCursor(undefined), [jobId, country, status, version]);
 
