@@ -1,6 +1,6 @@
 import { env } from '../../../env.js';
 import { checkUrl, MAX_BYTES, readCapped, ReadError } from './fetch.js';
-import type { Link } from './text.js';
+import { markdownToText, type Link } from './text.js';
 
 /**
  * The self-hosted Firecrawl, through plain fetch. Firecrawl follows redirects
@@ -71,7 +71,8 @@ export async function firecrawlScrape(url: string, opts: { domain: string }): Pr
   }
   const markdown = data.markdown.slice(0, MAX_MARKDOWN);
   const links = Array.isArray(data.links) ? data.links : [];
-  return { finalUrl, text: markdown, links: linksOf(markdown, links, finalUrl) };
+  // Links are read from the markdown; the text Claude quotes is plain.
+  return { finalUrl, text: markdownToText(markdown), links: linksOf(markdown, links, finalUrl) };
 }
 
 /** Firecrawl's link list, with each link's text taken from the markdown where it appears. */

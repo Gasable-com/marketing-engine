@@ -173,3 +173,32 @@ export function linksIn(html: string, pageUrl: string): Link[] {
   }
   return links;
 }
+
+/**
+ * Firecrawl's markdown as plain text, so quotes Claude copies carry no `**`,
+ * `#` or `[text](url)` and match what a reader sees. Link text stays; a
+ * contact link's target stays too (`tel:`, `mailto:`, WhatsApp), since that
+ * is often the only place the number is written. Every pattern is bounded
+ * and the input is capped, so nothing here can run away.
+ */
+export function markdownToText(markdown: string): string {
+  const contact = /^(tel:|mailto:|https?:\/\/(wa\.me|api\.whatsapp\.com)\/)/i;
+  return markdown
+    .slice(0, MAX_HTML)
+    .replace(/!\[([^[\]\n]{0,500})\]\([^)\s]{1,2000}(?:\s+"[^"\n]{0,300}")?\)/g, '$1')
+    .replace(/\[([^[\]\n]{0,500})\]\(([^)\s]{1,2000})(?:\s+"[^"\n]{0,300}")?\)/g, (_m, text: string, url: string) =>
+      contact.test(url) ? `${text} ${url.replace(/^(tel:|mailto:)/i, '')}` : text,
+    )
+    .replace(/<(https?:\/\/[^>\s]{1,2000})>/g, '$1')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+    .replace(/^[ \t]{0,8}(?:[-*+]|\d{1,3}[.)])[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}(?:[-*_][ \t]*){3,}$/gm, '')
+    .replace(/(\*\*|__)(?=\S)([^*_\n]{1,1000}?)\1/g, '$2')
+    .replace(/(^|[^\w*])[*_](?=\S)([^*_\n]{1,500}?)[*_](?=[^\w*]|$)/gm, '$1$2')
+    .replace(/`{1,3}([^`\n]{0,1000})`{1,3}/g, '$1')
+    .replace(/\|/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

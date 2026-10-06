@@ -484,3 +484,28 @@ describe('contacts by pattern', () => {
     expect(contactsIn('Invoice 6010123456 CR 1010', { country: 'SA' }).crs).toEqual([]);
   });
 });
+
+describe('markdown from Firecrawl', () => {
+  it('reads as plain text, keeping link text and contact targets', async () => {
+    const { markdownToText } = await import('../src/modules/discovery/read/text.js');
+    const text = markdownToText(
+      '# Pool chemicals\n\nAvailable in **tablets and granules**, *easy* to dose.\n\n' +
+        '- [Calcium Hypochlorite Granules](https://x.test/cal-hypo/)\n' +
+        '- Call [+966 50 111 1111](tel:+966501111111) or [WhatsApp](https://wa.me/966501111111)\n' +
+        '| Grade | 70% |\n![logo](https://x.test/l.png)\nsnake_case_word stays.',
+    );
+    expect(text).toContain('Available in tablets and granules, easy to dose.');
+    expect(text).toContain('Calcium Hypochlorite Granules');
+    expect(text).not.toMatch(/\*\*|\]\(|^#/m);
+    expect(text).toContain('+966501111111');
+    expect(text).toContain('https://wa.me/966501111111');
+    expect(text).toContain('snake_case_word stays.');
+  });
+
+  it('stays fast on hostile markdown', async () => {
+    const { markdownToText } = await import('../src/modules/discovery/read/text.js');
+    const started = Date.now();
+    markdownToText('['.repeat(1_000_000) + '*'.repeat(500_000) + '_'.repeat(500_000) + '`'.repeat(200_000));
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});

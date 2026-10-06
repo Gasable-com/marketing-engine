@@ -1164,12 +1164,12 @@ matched), `persona` (`id`, `name`, or `null`), `fit` (`strong`, `weak` or
 
 **How a task reads and ranks** (step 20). The `read_extract` stage takes the
 kept candidates in triage order, up to `DISCOVERY_MAX_READS` per task (default
-10), one at a time:
+25), one at a time:
 - a company profiled from the web in the last 90 days is not read again; it is
   ranked from its stored profile and its triage fit;
 - otherwise its home page and up to three product, about or contact pages on
   its own registrable domain are read into memory, through the self-hosted
-  Firecrawl (`FIRECRAWL_URL`) or a guarded plain fetch (every address checked
+  Firecrawl (`FIRECRAWL_URL`, its markdown turned into plain text) or a guarded plain fetch (every address checked
   public, redirects followed by hand on the same domain only, 2 MB and 15 s
   caps); a Maps-only company is judged from its listing;
 - Claude extracts the name, products, roles, cities, the persona it fits and
@@ -1195,7 +1195,7 @@ web in the last 90 days, before this job started.
 
 No page is stored: only checked quotes, in the source row's `data.quotes` and
 the result's `evidence`. A job makes at most `DISCOVERY_MAX_CLAUDE_CALLS`
-Claude calls (default 40) across planning, triage and extraction.
+Claude calls (default 60) across planning, triage and extraction.
 
 Found companies score `0.6` (strong fit) or `0.3` (weak), plus `0.2` × the
 share of the persona's signals their evidence shows, plus the quality and
