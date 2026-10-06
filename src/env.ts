@@ -30,6 +30,12 @@ const schema = z.object({
   FINANCE_ENGINE_URL: z.string().url().optional(),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   OTEL_SERVICE_NAME: z.string().optional(),
+
+  // Discovery's providers. Each is optional; without them a job ranks the pool.
+  CLAUDE_RUNNER_URL: z.string().url().optional(),
+  CLAUDE_RUNNER_TOKEN: z.string().optional(),
+  CLAUDE_RUNNER_TIMEOUT_MS: z.coerce.number().int().min(1000).default(120_000),
+  DISCOVERY_MAX_DEFERRALS: z.coerce.number().int().min(0).default(5),
 });
 
 export type Env = z.infer<typeof schema>;
