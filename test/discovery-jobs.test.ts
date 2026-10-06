@@ -76,6 +76,13 @@ describe('domains', () => {
     expect(normalizeDomain('x.co.ae')).toBe('x.co.ae');
   });
 
+  it('keeps a generic second level under any country code, so its companies stay apart', () => {
+    expect(normalizeDomain('https://www.acme.com.kw/en')).toBe('acme.com.kw');
+    expect(normalizeDomain('mail.beta.org.qa')).toBe('beta.org.qa');
+    expect(normalizeDomain('com.kw')).toBeNull();
+    expect(normalizeDomain('shop.example.co')).toBe('example.co');
+  });
+
   it('refuses a bare public suffix and an address', () => {
     expect(normalizeDomain('com.sa')).toBeNull();
     expect(normalizeDomain('http://10.0.1.1/')).toBeNull();
@@ -229,6 +236,9 @@ describe('profiles', () => {
       { countries: ['Saudi'] },
       { quality: 'great' },
       { products: [''] },
+      { profiledAt: null },
+      { profiledAt: 5 },
+      { profiledAt: 'yesterday' },
     ]) {
       const res = await call('PUT', `/v1/companies/${id}/profile`, body, { token: tokenA, internal: null });
       expect(res.status, JSON.stringify(body)).toBe(400);
@@ -283,6 +293,24 @@ function rank(query: Partial<FinderQuery>) {
   return withTenant(TENANT_A, (tx) => getFinder('products').find(tx, TENANT_A, { limit: 50, ...query }));
 }
 
+describe('profile columns', () => {
+  it('refuse a country list with an empty, joined or lower-case element', async () => {
+    const { company } = await upsertAs({ name: 'Checks Co', identifiers: [], source: { type: 'api' } });
+    for (const countries of [['SA', null], ['SA,AE'], ['sa']]) {
+      await expect(
+        db()`insert into company_profiles (company_id, countries) values (${company.id}, ${countries as string[]})`,
+      ).rejects.toThrow(/company_profiles_countries_check/);
+    }
+  });
+
+  it('refuse a job with the same country twice', async () => {
+    await expect(
+      db()`insert into discovery_jobs (tenant_id, product, countries, status)
+           values (${TENANT_A}, 'diesel', ${['SA', 'SA']}, 'running')`,
+    ).rejects.toThrow(/discovery_jobs_countries_check/);
+  });
+});
+
 describe('products finder', () => {
   it('folds in SQL exactly as foldText does', async () => {
     const samples = [
@@ -332,6 +360,21 @@ describe('products finder', () => {
     expect((await rank({ products: ['ديزل'] })).map((f) => f.companyId)).toEqual([pool.a]);
     expect((await rank({ products: ['diesel'] })).map((f) => f.companyId)).toEqual([pool.b]);
     expect((await rank({ products: ['DIESEL FUEL'] })).map((f) => f.companyId)).toEqual([pool.b]);
+  });
+
+  it('credits the earlier term when two match equally', async () => {
+    const pool = await seedPool();
+    const [b] = await rank({ products: ['fuel', 'diesel'], country: 'SA', limit: 50 }).then((r) =>
+      r.filter((f) => f.companyId === pool.b),
+    );
+    expect(b!.reasons[0]).toBe('product: fuel ~ Diesel fuel');
+  });
+
+  it('folds a city the same way on both sides, whatever the script', async () => {
+    const pool = await seedPool();
+    await withTenant(TENANT_A, (tx) => setProfile(tx, { tenantId: TENANT_A, companyId: pool.b, cities: ['İzmir'] }));
+    const found = await rank({ products: ['diesel'], cities: ['İzmir'] });
+    expect(found[0]!.reasons).toContain('city: İzmir');
   });
 
   it('takes a country from the profile as well as the company', async () => {

@@ -262,7 +262,8 @@ company is private to it.
 `source.type` is `rfq`, `import` or `api`. Identifier types are `cr`, `vat`,
 `domain`, `gmaps` (strong: they merge) and `phone`, `email` (weak: they link).
 A domain is stored as its registrable domain (`https://www.shop.example.com.sa/x`
-→ `example.com.sa`); one on a shared host such as `salla.sa`, `instagram.com`
+→ `example.com.sa`, and `com`, `net`, `org`, `gov`, `edu`, `ac`, `co`, `sch` or
+`med` under any two-letter country code is a suffix too); one on a shared host such as `salla.sa`, `instagram.com`
 or `business.site` is rejected as `shared host` and kept only in the source's
 `data`. An email also yields its domain, unless that is a free-mail provider or
 a shared host. `gmaps` is a Google Maps place id or cid exactly as given
@@ -307,7 +308,7 @@ the company's own words, any language (`sells` keeps its meaning as category
 codes). `roles` are any of `manufacturer`, `distributor`, `wholesaler`,
 `retailer`, `installer`, `service_provider`, `transporter`, `other`.
 `countries` are ISO 3166-1 alpha-2, upper-cased. `quality` is `full` or `thin`,
-and `profiledAt` is when web evidence last filled the profile. A list left out
+and `profiledAt`, an ISO timestamp, is when web evidence last filled the profile. A list left out
 or empty, and a value left out, keeps what is stored. → `200 { "profile": … }`.
 Emits `company.profiled`.
 
