@@ -4,7 +4,8 @@ import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import { setFirecrawlFetch, setResolver, setTransport } from '../src/modules/discovery/read/index.js';
 import { setProfile } from '../src/modules/discovery/index.js';
-import { setCompanyLookup, upsert } from '../src/spine/registry/index.js';
+import { fakeLookup, resetFakeLookup, seedFakeLookup, setCompanyLookup, upsert } from '../src/spine/registry/index.js';
+import { checkExtraction } from '../src/modules/discovery/extract/check.js';
 import { FakeBridge, FakeSerper, clearProviders, drive, ok, setProviders, type BridgeAnswer } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
@@ -127,8 +128,8 @@ function extract(input: Record<string, unknown>, tweak: (host: string, answer: R
     default:
       // Maps-only listings.
       answer =
-        listing && /Riyadh Diesel Station/.test(listing.title)
-          ? { ...base, fit: 'weak', name: q('Riyadh Diesel Station', 'Riyadh Diesel Station', listing.url), products: [], evidence: [] }
+        listing && /Riyadh Diesel Station|Desert Fuel/.test(listing.title)
+          ? { ...base, fit: 'weak', name: q(listing.title, listing.title, listing.url), products: [], evidence: [] }
           : { ...base, isCompany: false, fit: 'none', personaId: null, name: null, products: [], evidence: [], reason: 'an Instagram shop, not a company site' };
   }
   tweak(host, answer);
@@ -411,6 +412,45 @@ describe('read, extract, save, rank', () => {
     expect(row!.n).toBe(0);
   });
 
+  it('judges a listing whose website cannot be read as the listing alone, claiming no domain', async () => {
+    delete SITES['desertfuel.sa/'];
+    try {
+      const { results } = await search({ product: 'diesel', side: 'suppliers' });
+      const desert = named(results, 'Desert Fuel')!;
+      expect(desert).toMatchObject({ tier: 'found' });
+      expect(desert.identifiers.some((i) => i.type === 'domain')).toBe(false);
+      expect(desert.identifiers).toContainEqual({ type: 'gmaps', value: '5550000000000000005' });
+      const [source] = await db()<{ source_type: string }[]>`select source_type from company_sources where company_id = ${desert.company.id}`;
+      expect(source!.source_type).toBe('maps');
+    } finally {
+      SITES['desertfuel.sa/'] = page('desert-home.html');
+    }
+  });
+
+  it('keeps a listing’s Maps id off a company whose website the listing merely named', async () => {
+    const { results } = await search({ product: 'diesel', side: 'suppliers' });
+    const alfa = named(results, 'Alfa Diesel Supply')!;
+    // The listing that named alfa-diesel.com.sa as its site is titled differently.
+    expect(alfa.identifiers.some((i) => i.type === 'gmaps')).toBe(false);
+    const [source] = await db()<{ data: Record<string, unknown> }[]>`select data from company_sources where company_id = ${alfa.company.id}`;
+    expect(source!.data['listingCid']).toBe('1110000000000000001');
+  });
+
+  it('trusts a page’s CR only when the registrar gives the same name', async () => {
+    setCompanyLookup(fakeLookup);
+    resetFakeLookup();
+    seedFakeLookup('1010123456', { name: 'Alfa Diesel Supply' });
+    try {
+      const { results } = await search({ product: 'diesel', side: 'suppliers' });
+      const alfa = named(results, 'Alfa Diesel Supply')!;
+      const crs = await db()<{ value: string }[]>`select value from company_identifiers where company_id = ${alfa.company.id} and type = 'cr'`;
+      expect(crs).toEqual([{ value: '1010123456' }]);
+    } finally {
+      resetFakeLookup();
+      setCompanyLookup(null);
+    }
+  });
+
   it('merges what an SA and an AE search say about one company, and never lowers its quality', async () => {
     await search({ product: 'diesel', side: 'suppliers' });
     extractTweak = (host, answer) => {
@@ -471,5 +511,50 @@ describe('read, extract, save, rank', () => {
     expect(detail.tasks[0]!.counts['fetch_fallback']).toBeGreaterThan(0);
     expect(named(results, 'Gulf Fuel Trading Co.')).toMatchObject({ tier: 'found' });
     setFirecrawlFetch(null);
+  });
+});
+
+describe('checking quotes', () => {
+  const persona = { id: 'p1', signals: ['bulk diesel delivery'] };
+  const sources = [{ url: 'https://x.test/', text: 'Alfa Diesel Supply Company delivers bulk diesel to factories in Riyadh.' }];
+  const answer = (over: Record<string, unknown> = {}) =>
+    ({
+      isCompany: true, personaId: 'p1', fit: 'strong', roles: [], cities: [], reason: 'ok', nameAr: null,
+      name: { value: 'Alfa Diesel Supply', quote: 'Alfa Diesel Supply Company', url: 'https://x.test/' },
+      products: [], evidence: [], ...over,
+    }) as Parameters<typeof checkExtraction>[0];
+
+  it('drops a scrap padded to length, a quote longer than a sentence or two, and part of a word', () => {
+    const result = checkExtraction(
+      answer({
+        evidence: [
+          { signal: 0, claim: 'pad', quote: '..........re', url: 'https://x.test/' },
+          { signal: 0, claim: 'long', quote: 'x'.repeat(301), url: 'https://x.test/' },
+          { signal: 0, claim: 'part', quote: 'esel Supply Comp', url: 'https://x.test/' },
+          { signal: 0, claim: 'real', quote: 'delivers bulk diesel to factories', url: 'https://x.test/' },
+        ],
+      }),
+      { sources, personas: [persona] },
+    );
+    expect(result.saved && result.evidence.map((e) => e.claim)).toEqual(['real']);
+    expect(result.quotesDropped).toBe(3);
+  });
+
+  it('refuses a name that folds to nothing, and saves a Maps listing under its own title', () => {
+    expect(checkExtraction(answer({ name: { value: 'Trading Co.', quote: 'Alfa Diesel Supply Company', url: 'https://x.test/' } }), { sources, personas: [persona] }))
+      .toMatchObject({ saved: false, reason: 'no checked name' });
+
+    const listing = { url: 'https://maps.google.com/?cid=1', text: 'Falah Ready Mix\nRiyadh' };
+    const result = checkExtraction(
+      answer({ name: { value: 'falah ready mix', quote: 'invented quote, official supplier', url: 'https://evil.test/' } }),
+      { sources: [listing], personas: [persona], listingTitle: 'Falah Ready Mix', listingUrl: listing.url },
+    );
+    expect(result).toMatchObject({ saved: true, name: { value: 'Falah Ready Mix', quote: 'Falah Ready Mix', url: listing.url } });
+    // A longer, embellished name is not the listing's.
+    expect(
+      checkExtraction(answer({ name: { value: 'Falah Ready Mix - official Aramco supplier', quote: 'x', url: 'https://evil.test/' } }), {
+        sources: [listing], personas: [persona], listingTitle: 'Falah Ready Mix', listingUrl: listing.url,
+      }),
+    ).toMatchObject({ saved: false });
   });
 });

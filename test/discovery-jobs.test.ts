@@ -239,6 +239,7 @@ describe('profiles', () => {
       { profiledAt: null },
       { profiledAt: 5 },
       { profiledAt: 'yesterday' },
+      { profiledAt: '2999-01-01T00:00:00Z' },
     ]) {
       const res = await call('PUT', `/v1/companies/${id}/profile`, body, { token: tokenA, internal: null });
       expect(res.status, JSON.stringify(body)).toBe(400);

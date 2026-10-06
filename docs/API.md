@@ -1178,10 +1178,20 @@ kept candidates in triage order, up to `DISCOVERY_MAX_READS` per task (default
 - phones, emails and WhatsApp numbers are taken from the text by pattern, never
   from Claude; a CR found on a page is kept as `crClaimed` on the source and
   becomes an identifier only when Wathq names the same company;
-- the company is saved through `registry.upsert` (source `web`, or `maps` with
-  no website; the job's tenant owns the source row; never linked to an existing
-  company by name alone), and its profile is merged, never replaced: lists
-  unioned, quality only ever raised.
+- the company is saved through `registry.upsert` (source `web`, or `maps` when
+  no page of its site could be read; the job's tenant owns the source row;
+  never linked to an existing company by name alone), and its profile is
+  merged, never replaced: lists unioned, quality only ever raised, `profiledAt`
+  stamped only when web pages were read;
+- identity is claimed carefully: the domain only when its pages were read;
+  emails only on that domain; a Maps id only for a company with no website read
+  or whose listing carries the saved name (otherwise kept as `listingCid` on
+  the source); a CR only when Wathq gives exactly the same name;
+- a quote must be 12–300 characters once folded and appear on its page as
+  whole words.
+
+A candidate is "fresh" (not read again) when its company was profiled from the
+web in the last 90 days, before this job started.
 
 No page is stored: only checked quotes, in the source row's `data.quotes` and
 the result's `evidence`. A job makes at most `DISCOVERY_MAX_CLAUDE_CALLS`

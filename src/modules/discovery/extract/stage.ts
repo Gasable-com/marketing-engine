@@ -1,14 +1,14 @@
 import { db, withTenant } from '../../../db/client.js';
 import { env } from '../../../env.js';
 import { companyLookup, normalizeDomain, normalizeName, upsert, type RawIdentifier } from '../../../spine/registry/index.js';
-import { ask, reserveClaudeCall } from '../claude.js';
+import { ask, releaseClaudeCall, reserveClaudeCall } from '../claude.js';
 import { PermanentError, UsageLimitError } from '../errors.js';
 import { setProfile } from '../index.js';
 import type { Counts, JobRow, PersonaRow, TaskRow } from '../jobs.js';
 import { Extraction, extractPrompt } from '../prompts.js';
 import { contactsIn, readSite } from '../read/index.js';
 import { personasOf } from '../search/stages.js';
-import { checkExtraction, type Source } from './check.js';
+import { checkExtraction, sameName, type Source } from './check.js';
 
 /**
  * `read_extract`: for each kept candidate, in triage order, read its pages
@@ -97,18 +97,22 @@ export async function runReadExtract(job: JobRow, task: TaskRow): Promise<Counts
   ]);
   let processed = done[0]?.n ?? 0;
 
-  for (let i = 0; i < pending.length; i += 1) {
-    const c = pending[i]!;
-
-    // Profiled from the web lately: ranked from what is stored, not read again.
-    if (c.company_id && (await profiledWithin(c.company_id, FRESH_DAYS))) {
+  // Fresh ones first: profiled from the web lately, before this job began.
+  // They are ranked from what is stored, and never count against the caps.
+  const toRead: CandidateRow[] = [];
+  for (const c of pending) {
+    if (c.company_id && (await profiledFreshBefore(c.company_id, job.created_at))) {
       await mark(task, c.id, { status: 'extracted', reason: 'profile fresh: not re-read' });
       await bump(task, { read_skipped_fresh: 1 });
-      continue;
+    } else {
+      toRead.push(c);
     }
+  }
 
+  for (let i = 0; i < toRead.length; i += 1) {
+    const c = toRead[i]!;
     if (processed >= e.DISCOVERY_MAX_READS) {
-      await bump(task, { reads_capped: pending.length - i });
+      await bump(task, { reads_capped: toRead.length - i });
       break;
     }
     processed += 1;
@@ -116,7 +120,7 @@ export async function runReadExtract(job: JobRow, task: TaskRow): Promise<Counts
     try {
       const outcome = await readAndExtract(job, task, c, personas);
       if (outcome === 'budget') {
-        await bump(task, { extract_capped: pending.length - i });
+        await bump(task, { extract_capped: toRead.length - i });
         break;
       }
     } catch (err) {
@@ -129,9 +133,14 @@ export async function runReadExtract(job: JobRow, task: TaskRow): Promise<Counts
   return {};
 }
 
-async function profiledWithin(companyId: string, days: number): Promise<boolean> {
+/**
+ * Profiled from the web within FRESH_DAYS, and before this job began: a
+ * company this very job saved a minute ago is not "fresh", it is found.
+ * profiled_at is only stamped when web pages were actually read.
+ */
+async function profiledFreshBefore(companyId: string, jobStarted: Date): Promise<boolean> {
   const [row] = await db()<{ fresh: boolean }[]>`
-    select profiled_at > now() - make_interval(days => ${days}) as fresh
+    select profiled_at > now() - make_interval(days => ${FRESH_DAYS}) and profiled_at < ${jobStarted} as fresh
     from company_profiles where company_id = ${companyId}
   `;
   return row?.fresh === true;
@@ -143,6 +152,9 @@ async function readAndExtract(
   c: CandidateRow,
   personas: PersonaRow[],
 ): Promise<'done' | 'budget'> {
+  // The budget first, so a spent one costs no reading.
+  if (!(await reserveClaudeCall(job.tenant_id, job.id))) return 'budget';
+
   // The pages, in memory only.
   const sources: Source[] = [];
   if (c.domain) {
@@ -162,12 +174,14 @@ async function readAndExtract(
       text: [c.name, c.category, c.address, c.phone].filter(Boolean).join('\n'),
     });
   }
-  if (!sources.some((s) => s.url !== listingUrl) && !listingUrl) {
+  // A website counts only if it was read. A listing whose site could not be
+  // read is judged as the listing alone, with no claim to that domain.
+  const siteRead = sources.some((s) => s.url !== listingUrl);
+  if (!siteRead && !listingUrl) {
+    await releaseClaudeCall(job.tenant_id, job.id);
     await mark(task, c.id, { status: 'failed', reason: 'the site could not be read' });
     return 'done';
   }
-
-  if (!(await reserveClaudeCall(job.tenant_id, job.id))) return 'budget';
   await bump(task, { claude_calls: 1 });
 
   const raw = await ask('extract', {
@@ -192,7 +206,8 @@ async function readAndExtract(
   const result = checkExtraction(parsed.data, {
     sources,
     personas: personas.map((p) => ({ id: p.id, signals: p.signals })),
-    listingTitle: c.domain ? null : c.name,
+    listingTitle: siteRead ? null : c.name,
+    listingUrl: siteRead ? null : listingUrl,
   });
   await bump(task, {
     extracted: 1,
@@ -213,12 +228,16 @@ async function readAndExtract(
   // An address on the company's own domain says who it is. Any other one a
   // page prints (a partner's, a parent's, a web agency's) would bring that
   // domain along as a strong identifier and could merge two companies.
-  const emails = c.domain
+  const emails = c.domain && siteRead
     ? contacts.emails.filter((email) => normalizeDomain(email.slice(email.indexOf('@') + 1)) === c.domain)
     : [];
+  // A Maps listing joined this candidate because its website field named the
+  // domain, which anyone can type. Its Maps id says who the company is only
+  // when there is no site, or the listing carries the name that was saved.
+  const gmapsIsIt = c.gmaps !== null && (!siteRead || sameName(c.name, result.name.value));
   const identifiers: RawIdentifier[] = [
-    ...(c.domain ? [{ type: 'domain', value: c.domain }] : []),
-    ...(c.gmaps ? [{ type: 'gmaps', value: c.gmaps }] : []),
+    ...(c.domain && siteRead ? [{ type: 'domain', value: c.domain }] : []),
+    ...(gmapsIsIt ? [{ type: 'gmaps', value: c.gmaps! }] : []),
     ...(c.phone ? [{ type: 'phone', value: c.phone }] : []),
     ...phones.map((value) => ({ type: 'phone', value })),
     ...emails.map((value) => ({ type: 'email', value })),
@@ -226,7 +245,7 @@ async function readAndExtract(
 
   // A CR printed on a page could be anyone's, and a CR is strong: it only
   // becomes an identifier when the registrar names the same company.
-  const crClaimed = contacts.crs[0] ?? null;
+  const crClaimed = siteRead ? (contacts.crs[0] ?? null) : null;
   if (crClaimed && (await registrarAgrees(crClaimed, result.name.value))) {
     identifiers.push({ type: 'cr', value: crClaimed });
   }
@@ -248,10 +267,17 @@ async function readAndExtract(
       defaultCountry: task.country,
       linkByName: false,
       source: {
-        type: c.domain ? 'web' : 'maps',
-        ref: c.url ?? listingUrl ?? undefined,
+        type: siteRead ? 'web' : 'maps',
+        ref: (siteRead ? c.url : listingUrl) ?? undefined,
         tenantId: job.tenant_id,
-        data: { jobId: job.id, personaId: result.personaId, url: c.url ?? listingUrl, quotes, ...(crClaimed ? { crClaimed } : {}) },
+        data: {
+          jobId: job.id,
+          personaId: result.personaId,
+          url: siteRead ? c.url : listingUrl,
+          quotes,
+          ...(crClaimed ? { crClaimed } : {}),
+          ...(c.gmaps && !gmapsIsIt ? { listingCid: c.gmaps } : {}),
+        },
       },
     });
     await setProfile(tx, {
@@ -263,7 +289,8 @@ async function readAndExtract(
       cities: result.cities.map((p) => p.value),
       countries: [task.country],
       quality,
-      profiledAt: new Date(),
+      // Stamped only when web pages were read: a listing is not a profile.
+      ...(siteRead ? { profiledAt: new Date() } : {}),
     });
     return company;
   });
@@ -288,5 +315,5 @@ async function registrarAgrees(cr: string, name: string): Promise<boolean> {
   if (!facts?.name) return false;
   const a = normalizeName(facts.name);
   const b = normalizeName(name);
-  return a.length > 0 && (a === b || a.includes(b) || b.includes(a));
+  return a.length > 0 && b.length > 0 && a === b;
 }

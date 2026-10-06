@@ -536,14 +536,19 @@ const rank: TaskStage = {
     `);
     const byId = new Map(personas.map((p) => [p.id, p]));
 
+    // A company merged away since is ranked as its survivor; one now on the
+    // marketplace, or merged further, is not ranked at all.
     const found = await withTenant(job.tenant_id, (tx) => tx<FoundRow[]>`
-      select distinct on (d.company_id)
-             d.company_id::text, d.persona_ids[1]::text as persona_id, d.fit, d.evidence,
+      select distinct on (s.id)
+             s.id::text as company_id, d.persona_ids[1]::text as persona_id, d.fit, d.evidence,
              p.quality, extract(epoch from now() - p.profiled_at)::float8 / 86400 as age_days
       from discovery_candidates d
-      left join company_profiles p on p.company_id = d.company_id
-      where d.task_id = ${task.id} and d.status = 'extracted' and d.company_id is not null
-      order by d.company_id, case d.fit when 'strong' then 0 else 1 end
+      join companies c on c.id = d.company_id
+      join companies s on s.id = coalesce(c.merged_into, c.id)
+      left join company_profiles p on p.company_id = s.id
+      where d.task_id = ${task.id} and d.status = 'extracted'
+        and s.merged_into is null and s.on_platform_ref is null
+      order by s.id, (jsonb_array_length(d.evidence) > 0) desc, case d.fit when 'strong' then 0 else 1 end
     `);
 
     const foundRows: ResultRow[] = found.map((f) => {

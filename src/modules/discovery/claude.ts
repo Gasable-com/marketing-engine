@@ -75,3 +75,10 @@ export async function reserveClaudeCall(tenantId: string, jobId: string): Promis
   `);
   return rows.length > 0;
 }
+
+/** Give back a call reserved for work that did not happen. */
+export async function releaseClaudeCall(tenantId: string, jobId: string): Promise<void> {
+  await withTenant(tenantId, (tx) => tx`
+    update discovery_jobs set claude_calls = greatest(claude_calls - 1, 0) where id = ${jobId}
+  `);
+}

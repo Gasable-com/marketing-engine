@@ -177,11 +177,13 @@ export type Verdict = z.infer<typeof Triage>['verdicts'][number];
 // ---------------------------------------------------------------------------
 
 export const MIN_QUOTE = 12;
+/** A quote is a sentence or two, never a page. */
+export const MAX_QUOTE = 300;
 
 const quoted = {
   type: 'object',
   additionalProperties: false,
-  properties: { value: { type: 'string' }, quote: { type: 'string' }, url: { type: 'string' } },
+  properties: { value: { type: 'string' }, quote: { type: 'string', maxLength: 300 }, url: { type: 'string' } },
   required: ['value', 'quote', 'url'],
 };
 
@@ -190,7 +192,7 @@ export const extractPrompt = {
     'You read one company\'s web pages (or, when it has no website, its Google Maps listing) for a B2B company search in Saudi Arabia and the Gulf.',
     'You are given the product, the side of the search (suppliers that sell it, or buyers that would use it), the personas being searched for (each signal numbered from 0), the country, the Maps listing if any, and the pages: each with its url and text.',
     'Say whether this is one real company (not a directory, marketplace, news site or job board), which persona it fits best and how well (strong, weak, or none), and extract its name (and Arabic name when the pages give one), the products or services it offers, its supply-chain roles and its cities.',
-    'EVERY fact must carry a quote copied exactly, character for character, from one page\'s text, at least ' + MIN_QUOTE + ' characters long, and the url of that page exactly as given. For a Maps-only company the url is the listing\'s url and quotes come from the listing. Never paraphrase a quote, never invent one, never cite a url you were not given. A fact you cannot quote, leave out.',
+    'EVERY fact must carry a quote copied exactly, character for character, from one page\'s text, at least ' + MIN_QUOTE + ' and at most ' + MAX_QUOTE + ' characters long, and the url of that page exactly as given. For a Maps-only company the url is the listing\'s url and quotes come from the listing. Never paraphrase a quote, never invent one, never cite a url you were not given. A fact you cannot quote, leave out.',
     'Evidence: up to 6 items, each a short claim showing the persona fits, with its quote, url, and the index of the persona signal it shows (or null).',
     'Roles must be from: ' + PROFILE_ROLES.join(', ') + '.',
     'reason: one short line on why the company fits, or why it is not saved (e.g. "a directory, not a company").',
@@ -214,7 +216,7 @@ export const extractPrompt = {
           properties: {
             signal: { type: ['integer', 'null'] },
             claim: { type: 'string' },
-            quote: { type: 'string' },
+            quote: { type: 'string', maxLength: 300 },
             url: { type: 'string' },
           },
           required: ['signal', 'claim', 'quote', 'url'],
