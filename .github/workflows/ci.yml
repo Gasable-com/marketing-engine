@@ -41,6 +41,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: node --test ops/claude-runner/test/runner-test.mjs
       - run: npm run e2e
 
       # The dashboard is a separate app with its own dependencies.
