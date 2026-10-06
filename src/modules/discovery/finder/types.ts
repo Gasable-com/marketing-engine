@@ -10,6 +10,12 @@ export type FinderQuery = {
   text?: string | undefined;
   excludeCompanyIds?: string[] | undefined;
   limit: number;
+  /** Product terms, any language. Read by `products`; `basic` ignores them. */
+  products?: string[] | undefined;
+  /** Supply-chain roles, as profile roles. Read by `products`; `basic` ignores them. */
+  roles?: string[] | undefined;
+  /** City names. Read by `products`; `basic` ignores them. */
+  cities?: string[] | undefined;
 };
 
 export type Candidate = {

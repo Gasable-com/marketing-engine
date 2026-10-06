@@ -43,11 +43,20 @@ const NOISE_WORDS = new Set([
   'and',
 ]);
 
-export function normalizeName(name: string): string {
-  let text = name.toLowerCase();
+/**
+ * The letter folding on its own: lower case, Arabic marks gone, the letters
+ * people write interchangeably made one, and anything that is not a letter or
+ * digit a single space. Unlike normalizeName it keeps every word, so in
+ * product text a word like شركة still counts.
+ *
+ * `fold_text()` in migration 0016 is the same folding in SQL, for the stored
+ * side of a comparison; keep the two in step.
+ */
+export function foldText(text: string): string {
+  let folded = text.toLowerCase();
 
-  text = text.replace(ARABIC_MARKS, '');
-  text = text
+  folded = folded.replace(ARABIC_MARKS, '');
+  folded = folded
     .replace(/[أإآٱ]/g, 'ا')
     .replace(/ة/g, 'ه')
     .replace(/[ىئ]/g, 'ي')
@@ -55,12 +64,14 @@ export function normalizeName(name: string): string {
 
   // Punctuation goes, so "Co." and "co" and "& Co" fold together. Keep letters
   // and digits of any script.
-  text = text.replace(/[^\p{L}\p{N}]+/gu, ' ');
+  folded = folded.replace(/[^\p{L}\p{N}]+/gu, ' ');
 
-  const words = text
+  return folded.trim();
+}
+
+export function normalizeName(name: string): string {
+  return foldText(name)
     .split(' ')
-    .map((w) => w.trim())
-    .filter((w) => w && !NOISE_WORDS.has(w));
-
-  return words.join(' ').trim();
+    .filter((w) => w && !NOISE_WORDS.has(w))
+    .join(' ');
 }

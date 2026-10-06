@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
+import { getFinder, setProfile, type FinderQuery } from '../src/modules/discovery/index.js';
 import {
+  foldText,
   normalizeDomain,
   normalizeIdentifiers,
   setCompanyLookup,
@@ -222,5 +224,132 @@ describe('profiles', () => {
       const res = await call('PUT', `/v1/companies/${id}/profile`, body, { token: tokenA, internal: null });
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
+  });
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+
+type Pool = Record<'a' | 'b' | 'c' | 'd' | 'e', string>;
+
+/**
+ * The brief's pool: (a) a diesel distributor in Riyadh, full, profiled five
+ * days ago; (b) a diesel retailer in Jeddah, thin; (c) LPG in Riyadh; (d) a
+ * diesel company already on the marketplace; (e) a merged-away diesel company.
+ */
+async function seedPool(): Promise<Pool> {
+  async function add(name: string, profile: Omit<Parameters<typeof setProfile>[1], 'tenantId' | 'companyId'>) {
+    const { company } = await upsertAs({ name, country: 'SA', identifiers: [], source: { type: 'api' } });
+    await withTenant(TENANT_A, (tx) => setProfile(tx, { tenantId: TENANT_A, companyId: company.id, ...profile }));
+    return company.id;
+  }
+
+  const a = await add('Riyadh Diesel Distribution', {
+    products: ['توريد الديزل'],
+    roles: ['distributor'],
+    cities: ['Riyadh'],
+    quality: 'full',
+    profiledAt: new Date(Date.now() - 5 * DAY),
+  });
+  const b = await add('Jeddah Fuel Retail', {
+    products: ['Diesel fuel'],
+    roles: ['retailer'],
+    cities: ['Jeddah'],
+    quality: 'thin',
+  });
+  const c = await add('Riyadh Gas Cylinders', {
+    products: ['LPG cylinders', 'غاز البترول المسال'],
+    roles: ['distributor'],
+    cities: ['Riyadh'],
+    quality: 'full',
+  });
+  const d = await add('Platform Diesel Member', { products: ['Diesel'], cities: ['Riyadh'] });
+  const e = await add('Old Diesel Duplicate', { products: ['Diesel supply'], cities: ['Riyadh'] });
+
+  await db()`update companies set on_platform_ref = 'mkt-1', on_platform_at = now() where id = ${d}`;
+  await db()`update companies set merged_into = ${a} where id = ${e}`;
+  return { a, b, c, d, e };
+}
+
+function rank(query: Partial<FinderQuery>) {
+  return withTenant(TENANT_A, (tx) => getFinder('products').find(tx, TENANT_A, { limit: 50, ...query }));
+}
+
+describe('products finder', () => {
+  it('folds in SQL exactly as foldText does', async () => {
+    const samples = [
+      'شَرِكة  إبراهيم للتجارة — Diesel-Fuel_Supply!',
+      'مؤسّسة ٱلديزل ى ئ ؤ آ',
+      'ـتـوريـد   الديزل/البنزين',
+      'Café LPG & Co. ١٢٣ 456',
+    ];
+    for (const text of samples) {
+      const [row] = await db()<{ folded: string }[]>`select fold_text(${text}) as folded`;
+      expect(row!.folded, text).toBe(foldText(text));
+    }
+  });
+
+  it('finds the companies that sell the product in the country, and nobody else', async () => {
+    const pool = await seedPool();
+    const found = await rank({ products: ['ديزل', 'diesel'], country: 'SA' });
+    expect(found.map((f) => f.companyId)).toEqual([pool.a, pool.b]);
+    expect(found[0]!.reasons).toEqual([
+      'product: ديزل ~ توريد الديزل',
+      'profile: full',
+      'profiled 5 days ago',
+    ]);
+    expect(found[1]!.reasons).toEqual(['product: diesel ~ Diesel fuel', 'profile: thin']);
+    expect(found[0]!.score).toBeCloseTo(0.5 + 0.1 + 0.1, 5);
+    expect(found[1]!.score).toBeCloseTo(0.5 + 0.05, 5);
+  });
+
+  it('lets a city decide between two that otherwise rank the other way', async () => {
+    const pool = await seedPool();
+
+    const byRole = await rank({ products: ['ديزل', 'diesel'], country: 'SA', roles: ['retailer'] });
+    expect(byRole.map((f) => f.companyId)).toEqual([pool.b, pool.a]);
+
+    const byCity = await rank({ products: ['ديزل', 'diesel'], country: 'SA', roles: ['retailer'], cities: ['Riyadh'] });
+    expect(byCity.map((f) => f.companyId)).toEqual([pool.a, pool.b]);
+
+    const withCity = await rank({ products: ['ديزل', 'diesel'], country: 'SA', cities: ['riyadh'] });
+    expect(withCity[0]!.companyId).toBe(pool.a);
+    expect(withCity[0]!.reasons).toContain('product: ديزل ~ توريد الديزل');
+    expect(withCity[0]!.reasons).toContain('city: Riyadh');
+  });
+
+  it('matches through the folding, in Arabic and English', async () => {
+    const pool = await seedPool();
+    expect((await rank({ products: ['الديزل'] })).map((f) => f.companyId)).toEqual([pool.a]);
+    expect((await rank({ products: ['ديزل'] })).map((f) => f.companyId)).toEqual([pool.a]);
+    expect((await rank({ products: ['diesel'] })).map((f) => f.companyId)).toEqual([pool.b]);
+    expect((await rank({ products: ['DIESEL FUEL'] })).map((f) => f.companyId)).toEqual([pool.b]);
+  });
+
+  it('takes a country from the profile as well as the company', async () => {
+    const pool = await seedPool();
+    expect(await rank({ products: ['diesel'], country: 'AE' })).toEqual([]);
+
+    await withTenant(TENANT_A, (tx) => setProfile(tx, { tenantId: TENANT_A, companyId: pool.b, countries: ['AE'] }));
+    expect((await rank({ products: ['diesel'], country: 'AE' })).map((f) => f.companyId)).toEqual([pool.b]);
+  });
+
+  it('never returns more than the limit, and nothing without a term', async () => {
+    await seedPool();
+    expect(await rank({ products: ['ديزل', 'diesel'], country: 'SA', limit: 1 })).toHaveLength(1);
+    expect(await rank({ products: [' ! '] })).toEqual([]);
+    expect(await rank({})).toEqual([]);
+  });
+
+  it('fades freshness between 90 and 365 days', async () => {
+    const pool = await seedPool();
+    await db()`update company_profiles set profiled_at = now() - interval '200 days' where company_id = ${pool.a}`;
+    const [a] = await rank({ products: ['ديزل'] });
+    expect(a!.score).toBeCloseTo(0.5 + 0.1 + 0.1 * (165 / 275), 3);
+    expect(a!.reasons).toContain('profiled 200 days ago');
+
+    await db()`update company_profiles set profiled_at = now() - interval '400 days' where company_id = ${pool.a}`;
+    const [stale] = await rank({ products: ['ديزل'] });
+    expect(stale!.score).toBeCloseTo(0.6, 5);
+    expect(stale!.reasons.some((r) => r.startsWith('profiled'))).toBe(false);
   });
 });

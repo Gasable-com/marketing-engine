@@ -12,7 +12,7 @@ import { normalizeName } from "./names.js";
 
 export * from "./identifiers.js";
 export * from "./lookup/index.js";
-export { normalizeName } from "./names.js";
+export { foldText, normalizeName } from "./names.js";
 
 /**
  * How alike two normalised names must be before the registry links them.
