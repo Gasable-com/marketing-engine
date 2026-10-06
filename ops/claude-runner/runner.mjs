@@ -22,6 +22,9 @@ export const PROBE_REFUSED_EXIT = 3;
 
 // ---------------------------------------------------------------- the command
 
+/** The only tool a locked session may show: --json-schema's own answer channel. */
+const ALLOWED_TOOLS = ['StructuredOutput'];
+
 // The only argv the runner ever builds. Caller values are option *values*
 // (each follows its flag as its own argument), never flags of their own.
 export function lockedArgs({ schema, system, model, stream = false }) {
@@ -547,7 +550,9 @@ export function createRunner(config) {
   });
 
   // One call with the locked flags in stream-json: the init event must list
-  // no tools and no MCP servers, or the runner does not listen.
+  // no MCP servers and no tools except StructuredOutput, or the runner does
+  // not listen. StructuredOutput is how --json-schema hands back its answer;
+  // it can only end the reply, never reach outside it.
   async function probe() {
     const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
     const args = lockedArgs({ schema, system: 'Answer with ok set to true.', model: 'haiku', stream: true });
@@ -563,7 +568,8 @@ export function createRunner(config) {
     }
     const tools = Array.isArray(init?.tools) ? init.tools : null;
     const mcp = Array.isArray(init?.mcp_servers) ? init.mcp_servers : null;
-    const ok = !!init && tools !== null && tools.length === 0 && mcp !== null && mcp.length === 0;
+    const ok = !!init && tools !== null && tools.every((t) => ALLOWED_TOOLS.includes(t))
+      && mcp !== null && mcp.length === 0;
     c.log({
       ts: new Date().toISOString(), probe: ok ? 'ok' : 'refused', initSeen: !!init,
       tools: tools ?? null, mcpServers: mcp ? mcp.map((s) => s?.name ?? s) : null,

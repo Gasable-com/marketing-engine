@@ -44,7 +44,8 @@ function main() {
     if (probe !== 'none') {
       const init = {
         type: 'system', subtype: 'init', cwd: process.cwd(), session_id: 'fake',
-        tools: probe === 'tool' ? ['Bash'] : [],
+        // What real claude shows under --json-schema: its answer channel only.
+        tools: probe === 'tool' ? ['StructuredOutput', 'Bash'] : ['StructuredOutput'],
         mcp_servers: probe === 'mcp' ? [{ name: 'notion', status: 'connected' }] : [],
         model: 'claude-haiku',
       };
