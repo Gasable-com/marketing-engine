@@ -496,12 +496,14 @@ describe('a job end to end', () => {
     await drive();
 
     const detail = await call<JobDetail>('GET', `/internal/discovery/jobs/${jobId}`);
+    // Stages whose provider is unset are skipped, and their counts say so.
+    const skipped = { skipped_search: 1, skipped_triage: 1 };
     expect(detail.body.tasks.map((t) => [t.country, t.status, t.stage, t.counts, t.attempts])).toEqual([
-      ['SA', 'done', 'rank', { ranked: 2 }, 1],
-      ['AE', 'done', 'rank', { ranked: 0 }, 1],
+      ['SA', 'done', 'rank', { ranked: 2, ...skipped }, 1],
+      ['AE', 'done', 'rank', { ranked: 0, ...skipped }, 1],
     ]);
     expect(detail.body.job.status).toBe('done');
-    expect(detail.body.job.counts).toEqual({ ranked: 2 });
+    expect(detail.body.job.counts).toEqual({ ranked: 2, skipped_search: 2, skipped_triage: 2 });
     expect(detail.body.job.finishedAt).not.toBeNull();
 
     const sa = await call<ResultPage>('GET', `/internal/discovery/jobs/${jobId}/results?country=SA`);
@@ -560,7 +562,7 @@ describe('a job end to end', () => {
         category: null,
         countries: ['SA', 'AE'],
         status: 'done',
-        counts: { ranked: 2 },
+        counts: expect.objectContaining({ ranked: 2 }),
       }),
     ]);
   });

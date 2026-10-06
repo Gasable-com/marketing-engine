@@ -2,11 +2,12 @@ import { withTenant, type Tx } from '../../db/client.js';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { emit } from '../../spine/events/index.js';
-import { foldText } from '../../spine/registry/index.js';
 import { ask, bridgeConfigured } from './claude.js';
 import { DiscoveryError, PermanentError, UsageLimitError } from './errors.js';
 import { getFinder, type FinderQuery } from './finder/index.js';
 import { Identified, Personas, identifyPrompt, personasPrompt, type Persona } from './prompts.js';
+import { namesAPlace, placeWords } from './search/country.js';
+import { runSearch, runTriage, searchNeeds } from './search/stages.js';
 
 /**
  * Discovery jobs: an operator's search for a product, on one side (suppliers
@@ -266,54 +267,6 @@ async function startTasks(tx: Tx, job: JobRow): Promise<TaskRow[]> {
 // Planning: what the product is, and who to search for
 // ---------------------------------------------------------------------------
 
-/** Names a search term may not carry: the country is added when searching. */
-const PLACE_WORDS = [
-  'saudi',
-  'saudi arabia',
-  'ksa',
-  'uae',
-  'emirates',
-  'united arab emirates',
-  'riyadh',
-  'jeddah',
-  'dammam',
-  'mecca',
-  'makkah',
-  'medina',
-  'madinah',
-  'khobar',
-  'dhahran',
-  'jubail',
-  'yanbu',
-  'tabuk',
-  'abha',
-  'dubai',
-  'abu dhabi',
-  'sharjah',
-  'ajman',
-  'السعودية',
-  'المملكة العربية السعودية',
-  'الرياض',
-  'جدة',
-  'الدمام',
-  'مكة',
-  'المدينة المنورة',
-  'الخبر',
-  'الجبيل',
-  'ينبع',
-  'تبوك',
-  'الإمارات',
-  'دبي',
-  'أبوظبي',
-  'ابوظبي',
-  'الشارقة',
-].map(foldText);
-
-function namesAPlace(term: string): boolean {
-  const folded = ` ${foldText(term)} `;
-  return PLACE_WORDS.some((place) => folded.includes(` ${place} `));
-}
-
 const identify: PlanStage = {
   name: 'identify',
   needs: bridgeConfigured,
@@ -353,7 +306,9 @@ const personas: PlanStage = {
     const parsed = Personas.safeParse(raw);
     if (!parsed.success) throw new Error('claude bridge: personas answer out of shape');
 
-    const clean = (terms: string[]) => [...new Set(terms.filter((t) => !namesAPlace(t)))];
+    // The country is added when searching, from its discovery.country row.
+    const places = await placeWords(job.tenant_id, job.countries);
+    const clean = (terms: string[]) => [...new Set(terms.filter((t) => !namesAPlace(t, places)))];
     const list: Persona[] = parsed.data.personas.map((p) => ({
       ...p,
       searchTerms: clean(p.searchTerms),
@@ -579,10 +534,14 @@ const rank: TaskStage = {
 };
 
 /**
- * The stages a task runs through, in order. Steps 19 and 20 add search,
- * triage and reading in front of rank. A plain array, not a plugin system.
+ * The stages a task runs through, in order: search the web and Maps for the
+ * personas, triage what came back, rank. Step 20 adds reading in front of
+ * rank. A plain array, not a plugin system.
  */
-const TASK_STAGES: readonly TaskStage[] = [rank];
+const search: TaskStage = { name: 'search', needs: searchNeeds, run: runSearch };
+const triage: TaskStage = { name: 'triage', needs: searchNeeds, run: runTriage };
+
+const TASK_STAGES: readonly TaskStage[] = [search, triage, rank];
 
 /**
  * `discovery.task`: run one country of a job through its stages, then settle

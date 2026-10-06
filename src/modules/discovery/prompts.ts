@@ -119,3 +119,54 @@ export const Personas = z.object({
     .max(6),
 });
 export type Persona = z.infer<typeof Personas>['personas'][number];
+
+// ---------------------------------------------------------------------------
+// triage
+// ---------------------------------------------------------------------------
+
+export const triagePrompt = {
+  system: [
+    'You sort web and Google Maps search results for a B2B company search in Saudi Arabia and the Gulf.',
+    'You are given the product, the side of the search (suppliers that sell it, or buyers that would use it), the personas being searched for, and candidates: each a website or Maps listing with its name, search snippets, address, Maps category, and sometimes what is already known about the company.',
+    'For every candidate decide from that alone (you cannot open pages): keep it if it is most likely one real company matching one or more personas; drop it if it is a directory, marketplace, news article, blog, job board, government page, a company of another kind, or a company on the wrong side.',
+    'For a kept candidate give fit "strong" when the snippets clearly show the persona, "weak" when it is plausible but unclear, and the ids of the personas it fits. For a dropped one, fit is null and personaIds is empty.',
+    'Give a short reason (under 15 words), e.g. "directory listing", "news article", "sells cars, not admixtures", "ready-mix plant in Riyadh".',
+    'Return exactly one verdict per candidate id given, no more and no fewer.',
+    DATA_ONLY,
+  ].join('\n'),
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      verdicts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string' },
+            verdict: { type: 'string', enum: ['keep', 'drop'] },
+            fit: { type: ['string', 'null'], enum: ['strong', 'weak', null] },
+            personaIds: { type: 'array', items: { type: 'string' } },
+            reason: { type: 'string' },
+          },
+          required: ['id', 'verdict', 'fit', 'personaIds', 'reason'],
+        },
+      },
+    },
+    required: ['verdicts'],
+  },
+};
+
+export const Triage = z.object({
+  verdicts: z.array(
+    z.object({
+      id: z.string(),
+      verdict: z.enum(['keep', 'drop']),
+      fit: z.enum(['strong', 'weak']).nullable(),
+      personaIds: z.array(z.string()),
+      reason: z.string(),
+    }),
+  ),
+});
+export type Verdict = z.infer<typeof Triage>['verdicts'][number];

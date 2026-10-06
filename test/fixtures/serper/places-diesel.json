@@ -1,0 +1,5 @@
+{ "places": [
+  { "position": 1, "title": "Alfa Diesel", "address": "Industrial City 2, Riyadh", "category": "Fuel supplier", "phoneNumber": "050 111 1111", "website": "http://www.alfa-diesel.com.sa/", "cid": "1110000000000000001" },
+  { "position": 2, "title": "Riyadh Diesel Station", "address": "Al Sulay, Riyadh", "category": "Fuel supplier", "phoneNumber": "055 222 2222", "cid": "2220000000000000002" },
+  { "position": 3, "title": "Fuel Shop", "address": "Riyadh", "category": "Fuel supplier", "phoneNumber": "055 333 3333", "website": "https://instagram.com/fuelshop", "cid": "3330000000000000003" }
+] }
