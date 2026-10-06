@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import {
   normalizeDomain,
@@ -7,11 +8,40 @@ import {
   upsert,
   type UpsertInput,
 } from '../src/spine/registry/index.js';
-import { TENANT_A, resetDb, startQueue, teardownDb } from './helpers.js';
+import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb, tokenFor } from './helpers.js';
+
+const app = createApp();
+const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN!;
+
+let tokenA: string;
+
+async function call<T = Record<string, unknown>>(
+  method: string,
+  path: string,
+  body?: unknown,
+  auth: { token?: string; internal?: string | null } = {},
+): Promise<{ status: number; body: T }> {
+  const headers: Record<string, string> = {};
+  if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+  const internal = auth.internal === undefined ? INTERNAL_TOKEN : auth.internal;
+  if (internal) headers['X-Internal-Token'] = internal;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+  const res = await app.fetch(
+    new Request(`http://engine.test${path}`, {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
+  );
+  const text = await res.text();
+  return { status: res.status, body: (text ? JSON.parse(text) : null) as T };
+}
 
 beforeAll(async () => {
   await resetDb();
   await startQueue();
+  tokenA = await tokenFor(TENANT_A);
 });
 
 afterAll(async () => {
@@ -129,5 +159,68 @@ describe('gmaps and web sources', () => {
     const { identifiers, rejected } = normalizeIdentifiers([{ type: 'gmaps', value: 'place id?' }]);
     expect(identifiers).toEqual([]);
     expect(rejected[0]?.reason).toBe('not a Google Maps place id');
+  });
+});
+
+describe('profiles', () => {
+  async function company() {
+    const { company } = await upsertAs({
+      name: 'Diesel Co',
+      country: 'SA',
+      identifiers: [],
+      source: { type: 'api' },
+    });
+    return company.id;
+  }
+
+  it('takes products, roles, cities, countries, quality and when it was profiled', async () => {
+    const id = await company();
+    const res = await call<{ profile: Record<string, unknown> }>(
+      'PUT',
+      `/v1/companies/${id}/profile`,
+      {
+        sells: ['diesel'],
+        products: ['توريد الديزل', 'Diesel fuel'],
+        roles: ['distributor'],
+        cities: ['Riyadh'],
+        countries: ['sa', 'AE'],
+        quality: 'full',
+        profiledAt: '2026-10-01T00:00:00Z',
+      },
+      { token: tokenA, internal: null },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.profile).toMatchObject({
+      sells: ['diesel'],
+      products: ['توريد الديزل', 'Diesel fuel'],
+      roles: ['distributor'],
+      cities: ['Riyadh'],
+      countries: ['SA', 'AE'],
+      quality: 'full',
+      profiled_at: '2026-10-01T00:00:00.000Z',
+    });
+
+    // A later write that says nothing about them leaves them alone.
+    const again = await call<{ profile: Record<string, unknown> }>(
+      'PUT',
+      `/v1/companies/${id}/profile`,
+      { sector: 'energy' },
+      { token: tokenA, internal: null },
+    );
+    expect(again.body.profile).toMatchObject({ sector: 'energy', products: ['توريد الديزل', 'Diesel fuel'], quality: 'full' });
+  });
+
+  it('refuses what the columns would refuse', async () => {
+    const id = await company();
+    for (const body of [
+      { roles: ['broker'] },
+      { countries: ['Saudi'] },
+      { quality: 'great' },
+      { products: [''] },
+    ]) {
+      const res = await call('PUT', `/v1/companies/${id}/profile`, body, { token: tokenA, internal: null });
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
   });
 });

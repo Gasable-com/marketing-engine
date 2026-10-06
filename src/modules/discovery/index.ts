@@ -11,6 +11,19 @@ export * from './finder/index.js';
 
 const DEFAULT_INVITE_DAYS = 14;
 
+/** What a company does in a supply chain. The column checks the same list. */
+export const PROFILE_ROLES = [
+  'manufacturer',
+  'distributor',
+  'wholesaler',
+  'retailer',
+  'installer',
+  'service_provider',
+  'transporter',
+  'other',
+] as const;
+export type ProfileRole = (typeof PROFILE_ROLES)[number];
+
 export type ProfileRow = {
   company_id: string;
   buys: string[];
@@ -18,6 +31,15 @@ export type ProfileRow = {
   sector: string | null;
   city: string | null;
   size: string | null;
+  /** Product names in the company's own words, any language. */
+  products: string[];
+  roles: ProfileRole[];
+  cities: string[];
+  /** ISO 3166-1 alpha-2, upper case. */
+  countries: string[];
+  quality: 'full' | 'thin' | null;
+  /** When web evidence last filled the profile. */
+  profiled_at: Date | null;
   updated_at: Date;
 };
 
@@ -152,12 +174,24 @@ export async function setProfile(
     sector?: string | undefined;
     city?: string | undefined;
     size?: string | undefined;
+    products?: string[] | undefined;
+    roles?: ProfileRole[] | undefined;
+    cities?: string[] | undefined;
+    countries?: string[] | undefined;
+    quality?: 'full' | 'thin' | undefined;
+    profiledAt?: Date | undefined;
   },
 ): Promise<ProfileRow> {
+  // Like the other lists, an empty one leaves what is there: a caller that
+  // knows nothing about products does not erase them.
   const [row] = await tx<ProfileRow[]>`
-    insert into company_profiles (company_id, buys, sells, sector, city, size)
+    insert into company_profiles
+      (company_id, buys, sells, sector, city, size,
+       products, roles, cities, countries, quality, profiled_at)
     values (${input.companyId}, ${input.buys ?? []}, ${input.sells ?? []},
-            ${input.sector ?? null}, ${input.city ?? null}, ${input.size ?? null})
+            ${input.sector ?? null}, ${input.city ?? null}, ${input.size ?? null},
+            ${input.products ?? []}, ${input.roles ?? []}, ${input.cities ?? []},
+            ${input.countries ?? []}, ${input.quality ?? null}, ${input.profiledAt ?? null})
     on conflict (company_id) do update set
       buys   = case when cardinality(excluded.buys) > 0 then excluded.buys
                     else company_profiles.buys end,
@@ -166,6 +200,16 @@ export async function setProfile(
       sector = coalesce(excluded.sector, company_profiles.sector),
       city   = coalesce(excluded.city, company_profiles.city),
       size   = coalesce(excluded.size, company_profiles.size),
+      products  = case when cardinality(excluded.products) > 0 then excluded.products
+                       else company_profiles.products end,
+      roles     = case when cardinality(excluded.roles) > 0 then excluded.roles
+                       else company_profiles.roles end,
+      cities    = case when cardinality(excluded.cities) > 0 then excluded.cities
+                       else company_profiles.cities end,
+      countries = case when cardinality(excluded.countries) > 0 then excluded.countries
+                       else company_profiles.countries end,
+      quality     = coalesce(excluded.quality, company_profiles.quality),
+      profiled_at = coalesce(excluded.profiled_at, company_profiles.profiled_at),
       updated_at = now()
     returning *
   `;
@@ -176,7 +220,18 @@ export async function setProfile(
     type: 'company.profiled',
     subjectType: 'company',
     subjectId: input.companyId,
-    payload: { buys: row.buys, sells: row.sells, sector: row.sector, city: row.city },
+    payload: {
+      buys: row.buys,
+      sells: row.sells,
+      sector: row.sector,
+      city: row.city,
+      products: row.products,
+      roles: row.roles,
+      cities: row.cities,
+      countries: row.countries,
+      quality: row.quality,
+      profiledAt: row.profiled_at,
+    },
   });
 
   return row;
