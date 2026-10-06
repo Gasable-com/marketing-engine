@@ -1,7 +1,7 @@
 import { db, withTenant } from '../../../db/client.js';
 import { env } from '../../../env.js';
 import { findByIdentifier, isSharedHost, normalizeDomain, normalizeIdentifiers } from '../../../spine/registry/index.js';
-import { ask, bridgeConfigured } from '../claude.js';
+import { ask, bridgeConfigured, reserveClaudeCall } from '../claude.js';
 import { PermanentError, UsageLimitError } from '../errors.js';
 import type { Counts, JobRow, PersonaRow, TaskRow } from '../jobs.js';
 import { Triage, triagePrompt, type Verdict } from '../prompts.js';
@@ -23,7 +23,7 @@ const MAX_REASON = 120;
 
 type Planned = { kind: 'web' | 'places'; q: string; hl: string; personaId: string };
 
-async function personasOf(job: JobRow): Promise<PersonaRow[]> {
+export async function personasOf(job: JobRow): Promise<PersonaRow[]> {
   return withTenant(job.tenant_id, (tx) => tx<PersonaRow[]>`
     select * from discovery_personas where job_id = ${job.id} order by position
   `);
@@ -300,7 +300,8 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
     for (const r of rows) profiles.set(r.company_id, { products: r.products, roles: r.roles, cities: r.cities });
   }
 
-  for (let i = 0; i < pending.length; i += TRIAGE_BATCH) {
+  let budgetLeft = true;
+  for (let i = 0; i < pending.length && budgetLeft; i += TRIAGE_BATCH) {
     const batch = pending.slice(i, i + TRIAGE_BATCH);
     const ids = new Set(batch.map((c) => c.id));
     const input = JSON.stringify({
@@ -323,6 +324,11 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
 
     let verdicts: Verdict[] | null = null;
     for (let attempt = 0; attempt < 2 && !verdicts; attempt += 1) {
+      // The job's Claude budget first; once it is spent the rest stay new.
+      if (!(await reserveClaudeCall(job.tenant_id, job.id))) {
+        budgetLeft = false;
+        break;
+      }
       // Counted on the task as it happens, so a deferral loses no calls.
       await withTenant(job.tenant_id, (tx) => tx`
         update discovery_tasks

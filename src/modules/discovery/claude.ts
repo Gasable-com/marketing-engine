@@ -1,3 +1,4 @@
+import { withTenant } from '../../db/client.js';
 import { env } from '../../env.js';
 import { PermanentError, UsageLimitError } from './errors.js';
 
@@ -59,4 +60,18 @@ export async function ask(task: string, input: AskInput): Promise<unknown> {
   }
   const reason = typeof body?.['reason'] === 'string' ? body['reason'] : `http_${res.status}`;
   throw new Error(`claude bridge: ${reason}`);
+}
+
+/**
+ * Take one Claude call from the job's budget (DISCOVERY_MAX_CLAUDE_CALLS),
+ * before making it. False when the budget is spent: the caller stops asking.
+ * One statement, so tasks running at once can never overspend it together.
+ */
+export async function reserveClaudeCall(tenantId: string, jobId: string): Promise<boolean> {
+  const rows = await withTenant(tenantId, (tx) => tx`
+    update discovery_jobs set claude_calls = claude_calls + 1
+    where id = ${jobId} and claude_calls < ${env().DISCOVERY_MAX_CLAUDE_CALLS}
+    returning id
+  `);
+  return rows.length > 0;
 }
