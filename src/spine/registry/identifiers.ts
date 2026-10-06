@@ -62,6 +62,35 @@ export const SHARED_HOSTS: ReadonlySet<string> = new Set([
   'github.io',
   'haraj.com.sa',
   'opensooq.com',
+  // Site builders and hosted shops: a company's page on one is a subdomain or
+  // a path, so the registrable domain is the builder's.
+  'site123.me',
+  'wix.com',
+  'weebly.com',
+  'webnode.com',
+  'webnode.page',
+  'godaddysites.com',
+  'mystrikingly.com',
+  'strikingly.com',
+  'jimdo.com',
+  'jimdofree.com',
+  'jimdosite.com',
+  'webflow.io',
+  'framer.website',
+  'framer.ai',
+  'carrd.co',
+  'tilda.ws',
+  'ueniweb.com',
+  'squarespace.com',
+  'zohosites.com',
+  'odoo.com',
+  'youcan.shop',
+  'expandcart.com',
+  // Link-in-bio pages.
+  'bio.link',
+  'beacons.ai',
+  'linkr.bio',
+  'taplink.cc',
 ]);
 
 /**

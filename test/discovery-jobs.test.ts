@@ -100,6 +100,18 @@ describe('domains', () => {
     ]);
   });
 
+  it('treats site builders and link pages as shared hosts', () => {
+    const { identifiers, rejected } = normalizeIdentifiers([
+      { type: 'domain', value: 'https://alamin-clean.site123.me/' },
+      { type: 'domain', value: 'https://pools.weebly.com' },
+      { type: 'domain', value: 'https://x.godaddysites.com/' },
+      { type: 'domain', value: 'https://bio.link/alamin' },
+      { type: 'email', value: 'info@alamin.mystrikingly.com' },
+    ]);
+    expect(identifiers).toEqual([{ type: 'email', value: 'info@alamin.mystrikingly.com' }]);
+    expect(rejected.map((r) => r.reason)).toEqual(['shared host', 'shared host', 'shared host', 'shared host']);
+  });
+
   it('takes no domain from a mailbox on a shared host, and the registrable one from any other', () => {
     const { identifiers } = normalizeIdentifiers([
       { type: 'email', value: 'shop@instagram.com' },

@@ -264,8 +264,9 @@ company is private to it.
 A domain is stored as its registrable domain (`https://www.shop.example.com.sa/x`
 → `example.com.sa`, and `com`, `net`, `org`, `gov`, `edu`, `ac`, `co`, `sch` or
 `med` under any two-letter country code is a suffix too); one on a shared host such as `salla.sa`, `instagram.com`
-or `business.site` is rejected as `shared host` and kept only in the source's
-`data`. An email also yields its domain, unless that is a free-mail provider or
+or `business.site`, or on a site builder or link page such as `site123.me`,
+`weebly.com`, `godaddysites.com` or `bio.link`, is rejected as `shared host` and
+kept only in the source's `data`. An email also yields its domain, unless that is a free-mail provider or
 a shared host. `gmaps` is a Google Maps place id or cid exactly as given
 (`[A-Za-z0-9:_-]`, up to 200). `enrich: true` asks the registrar about a `cr`
 first, when a lookup is configured. Sources `web` and `maps` are written by
