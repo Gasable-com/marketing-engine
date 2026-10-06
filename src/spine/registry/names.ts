@@ -49,8 +49,10 @@ const NOISE_WORDS = new Set([
  * digit a single space. Unlike normalizeName it keeps every word, so in
  * product text a word like شركة still counts.
  *
- * `fold_text()` in migration 0016 is the same folding in SQL, for the stored
- * side of a comparison; keep the two in step.
+ * `fold_text()` in migration 0016 is the same folding in SQL, and what the
+ * products finder compares with, on both sides. Keep the two in step; for
+ * scripts with combining marks beyond Arabic the database's locale decides
+ * what counts as a letter, so they can differ there.
  */
 export function foldText(text: string): string {
   let folded = text.toLowerCase();

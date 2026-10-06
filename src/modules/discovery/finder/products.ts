@@ -11,8 +11,9 @@ import type { Candidate, Finder, FinderQuery } from './types.js';
  * (`ديزل` in `توريد الديزل`, `diesel` in `Diesel fuel`), or when their trigram
  * similarity is at least MATCH_SIMILARITY. Folding is foldText(), not
  * normalizeName(): in product text a word like شركة is meaning, not noise.
- * The terms are folded here, the stored products by fold_text() in SQL, which
- * is the same folding.
+ * The comparison itself folds both sides with fold_text(), foldText() in SQL,
+ * so a term and a product are always folded by the same function; foldText()
+ * here only drops terms that fold to nothing.
  *
  * Only companies with a matching product come back; roles, cities, quality
  * and freshness then order them. Every signal that scored is one reason, so
@@ -58,21 +59,21 @@ export const productsFinder: Finder = {
   async find(tx: Tx, tenantId: string, query: FinderQuery): Promise<Candidate[]> {
     void tenantId; // the pool is shared; nothing here is tenant-specific yet
 
-    const terms = (query.products ?? [])
-      .map((term) => ({ term, folded: foldText(term) }))
-      .filter((t) => t.folded);
+    const terms = (query.products ?? []).filter((term) => foldText(term));
     if (terms.length === 0) return [];
 
     const roles = query.roles ?? [];
-    const cities = (query.cities ?? []).map(foldText).filter(Boolean);
+    const cities = (query.cities ?? []).filter((city) => foldText(city));
     const excluded = query.excludeCompanyIds?.length ? query.excludeCompanyIds : null;
     const country = query.country ?? null;
 
     const rows = await tx<Row[]>`
       with terms as (
-        select term, folded
-        from unnest(${terms.map((t) => t.term)}::text[], ${terms.map((t) => t.folded)}::text[])
-          as t (term, folded)
+        select term, fold_text(term) as folded, pos
+        from unnest(${terms}::text[]) with ordinality as t (term, pos)
+      ),
+      cities as (
+        select fold_text(city) as folded from unnest(${cities}::text[]) as c (city)
       ),
       pool as (
         select c.id, c.created_at, p.products, p.roles, p.cities, p.quality, p.profiled_at
@@ -86,13 +87,13 @@ export const productsFinder: Finder = {
                or ${country}::text = any(p.countries))
       ),
       pairs as (
-        select pool.id, t.term, pr.product, fold_text(pr.product) as folded_product, t.folded
+        select pool.id, t.term, t.pos, pr.product, fold_text(pr.product) as folded_product, t.folded
         from pool
         cross join lateral unnest(pool.products) as pr (product)
         cross join terms t
       ),
       scored_pairs as (
-        select id, term, product,
+        select id, term, pos, product,
                case when strpos(folded_product, folded) > 0 then 1
                     else similarity(folded, folded_product) end::float8 as similarity
         from pairs
@@ -103,14 +104,14 @@ export const productsFinder: Finder = {
         select distinct on (id) id, term, product, similarity
         from scored_pairs
         where similarity >= ${MATCH_SIMILARITY}::float8
-        order by id, similarity desc, term, product
+        order by id, similarity desc, pos, product
       ),
       signals as (
         select best.*, pool.created_at, pool.quality, pool.profiled_at,
                (select r from unnest(pool.roles) r
                 where r = any(${roles}::text[]) order by r limit 1) as role,
                (select c from unnest(pool.cities) c
-                where fold_text(c) = any(${cities}::text[]) order by c limit 1) as city,
+                where fold_text(c) in (select folded from cities) order by c limit 1) as city,
                extract(epoch from now() - pool.profiled_at)::float8 / 86400 as age_days
         from best join pool using (id)
       ),
