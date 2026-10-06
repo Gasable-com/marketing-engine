@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { replay } from '../../../modules/webhooks/index.js';
 import { db } from '../../../db/client.js';
 import * as campaignFeeds from './campaigns.js';
+import { discoveryOperator } from './discovery.js';
 import * as feeds from './feeds.js';
 import { jobs, oneJob, retryJob, schedules } from './jobs.js';
 import { metrics } from './metrics.js';
@@ -24,8 +25,8 @@ import {
  * The platform read side. Mounted under /internal, so the token middleware in
  * routes/internal.ts already guards it — a tenant JWT is not enough here.
  *
- * Read-only apart from two things an operator genuinely needs: retrying a
- * failed job and replaying a failed delivery.
+ * Read-only apart from what an operator genuinely needs: retrying a failed
+ * job, replaying a failed delivery, and creating a discovery job.
  *
  * This is the one place that reads across every module's tables. A dashboard
  * is inherently cross-cutting; it owns nothing and writes nothing, so nothing
@@ -34,6 +35,8 @@ import {
 export const operator = new Hono();
 
 const base = listQuery.merge(windowQuery);
+
+operator.route('/', discoveryOperator);
 
 operator.get('/internal/overview', async (c) => {
   const w = windowQuery.safeParse(c.req.query());

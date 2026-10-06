@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
-import { getFinder, setProfile, type FinderQuery } from '../src/modules/discovery/index.js';
+import {
+  TASK_RETRY_LIMIT,
+  getFinder,
+  productsFinder,
+  registerFinder,
+  runTask,
+  setProfile,
+  type FinderQuery,
+  type TaskJob,
+} from '../src/modules/discovery/index.js';
 import {
   foldText,
   normalizeDomain,
@@ -351,5 +360,320 @@ describe('products finder', () => {
     const [stale] = await rank({ products: ['ديزل'] });
     expect(stale!.score).toBeCloseTo(0.6, 5);
     expect(stale!.reasons.some((r) => r.startsWith('profiled'))).toBe(false);
+  });
+});
+
+type QueuedTask = { id: string; data: TaskJob; singleton_key: string; retry_limit: number };
+
+/** Waiting task jobs, in the order of the job's countries. */
+async function queuedTasks(): Promise<QueuedTask[]> {
+  return db()<QueuedTask[]>`
+    select j.id::text, j.data, j.singleton_key, j.retry_limit
+    from pgboss.job j
+    join discovery_tasks t on t.id = (j.data->>'taskId')::uuid
+    join discovery_jobs d on d.id = t.job_id
+    where j.name = 'discovery.task' and j.state = 'created'
+    order by d.created_at, array_position(d.countries, t.country)
+  `;
+}
+
+/**
+ * Step 19 fills a job's search terms. Until then a test stands in for it, so
+ * an Arabic product name also reaches a company that lists it in English.
+ */
+async function setTerms(jobId: string, terms: string[]) {
+  await db()`update discovery_jobs set terms = ${terms} where id = ${jobId}`;
+}
+
+/** Drive the task worker by hand: take each waiting job, delete it, run it. */
+async function drive(): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    const [job] = await queuedTasks();
+    if (!job) return;
+    await db()`delete from pgboss.job where id = ${job.id}`;
+    await runTask(job.data, { finalAttempt: true });
+  }
+  throw new Error('drive did not settle');
+}
+
+async function discoveryEvents(): Promise<{ type: string; payload: Record<string, unknown> }[]> {
+  return db()`select type, payload from events where type like 'discovery.%' order by id`;
+}
+
+type JobDetail = {
+  job: { id: string; tenantId: string; tenantName: string; status: string; counts: Record<string, number>; finishedAt: string | null };
+  tasks: { id: string; country: string; status: string; stage: string | null; counts: Record<string, number>; error: string | null; attempts: number }[];
+};
+
+type ResultPage = {
+  items: {
+    rank: number;
+    score: number;
+    reasons: string[];
+    country: string;
+    company: { id: string; name: string; country: string };
+    profile: { products: string[]; roles: string[]; cities: string[]; quality: string | null; profiledAt: string | null } | null;
+    identifiers: { type: string; value: string }[];
+  }[];
+  nextCursor: string | null;
+};
+
+function createJob(body: Record<string, unknown>) {
+  return call<JobDetail>('POST', '/internal/discovery/jobs', body);
+}
+
+describe('a job end to end', () => {
+  it('ranks the pool per country through the queue and sums the counts', async () => {
+    const pool = await seedPool();
+    await upsertAs({
+      name: 'Riyadh Diesel Distribution',
+      country: 'SA',
+      identifiers: [
+        { type: 'domain', value: 'https://www.riyadh-diesel.com.sa/ar' },
+        { type: 'phone', value: '+966501234567' },
+        { type: 'gmaps', value: 'ChIJ-riyadh-diesel' },
+      ],
+      source: { type: 'web' },
+    });
+
+    const created = await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: ['SA', 'ae'] });
+    expect(created.status).toBe(201);
+    expect(created.body.job).toMatchObject({ tenantId: TENANT_A, tenantName: 'Tenant A', status: 'running' });
+    expect(created.body.tasks.map((t) => [t.country, t.status])).toEqual([
+      ['SA', 'queued'],
+      ['AE', 'queued'],
+    ]);
+
+    const queued = await queuedTasks();
+    expect(queued.map((q) => q.singleton_key)).toEqual(created.body.tasks.map((t) => t.id));
+    expect(queued.every((q) => q.retry_limit === TASK_RETRY_LIMIT)).toBe(true);
+
+    const jobId = created.body.job.id;
+    await setTerms(jobId, ['diesel']);
+    await drive();
+
+    const detail = await call<JobDetail>('GET', `/internal/discovery/jobs/${jobId}`);
+    expect(detail.body.tasks.map((t) => [t.country, t.status, t.stage, t.counts, t.attempts])).toEqual([
+      ['SA', 'done', 'rank', { ranked: 2 }, 1],
+      ['AE', 'done', 'rank', { ranked: 0 }, 1],
+    ]);
+    expect(detail.body.job.status).toBe('done');
+    expect(detail.body.job.counts).toEqual({ ranked: 2 });
+    expect(detail.body.job.finishedAt).not.toBeNull();
+
+    const sa = await call<ResultPage>('GET', `/internal/discovery/jobs/${jobId}/results?country=SA`);
+    expect(sa.body.items.map((r) => [r.rank, r.company.id])).toEqual([
+      [1, pool.a],
+      [2, pool.b],
+    ]);
+    expect(sa.body.items[0]).toMatchObject({
+      country: 'SA',
+      company: { id: pool.a, name: 'Riyadh Diesel Distribution', country: 'SA' },
+      profile: { products: ['توريد الديزل'], roles: ['distributor'], cities: ['Riyadh'], quality: 'full' },
+      identifiers: [
+        { type: 'domain', value: 'riyadh-diesel.com.sa' },
+        { type: 'gmaps', value: 'ChIJ-riyadh-diesel' },
+        { type: 'phone', value: '+966501234567' },
+      ],
+    });
+    expect(sa.body.items[0]!.reasons).toContain('product: ديزل ~ توريد الديزل');
+    expect(sa.body.items[0]!.score).toBeGreaterThan(sa.body.items[1]!.score);
+
+    const ae = await call<ResultPage>('GET', `/internal/discovery/jobs/${jobId}/results?country=AE`);
+    expect(ae.body.items).toEqual([]);
+
+    const paged = await call<ResultPage>('GET', `/internal/discovery/jobs/${jobId}/results?limit=1`);
+    expect(paged.body.items.map((r) => r.company.id)).toEqual([pool.a]);
+    const next = await call<ResultPage>(
+      'GET',
+      `/internal/discovery/jobs/${jobId}/results?limit=1&cursor=${paged.body.nextCursor}`,
+    );
+    expect(next.body.items.map((r) => r.company.id)).toEqual([pool.b]);
+
+    expect((await discoveryEvents()).map((e) => e.type)).toEqual([
+      'discovery.job.created',
+      'discovery.task.finished',
+      'discovery.task.finished',
+      'discovery.job.finished',
+    ]);
+    const [createdEvent] = await discoveryEvents();
+    expect(createdEvent!.payload).toEqual({ jobId, product: 'ديزل', countries: ['SA', 'AE'] });
+
+    const runs = await db()<{ finder: string; result_count: number }[]>`
+      select finder, result_count from finder_runs where tenant_id = ${TENANT_A} order by id
+    `;
+    expect(runs).toEqual([
+      { finder: 'products', result_count: 2 },
+      { finder: 'products', result_count: 0 },
+    ]);
+
+    const list = await call<{ items: Record<string, unknown>[] }>('GET', `/internal/discovery/jobs?tenantId=${TENANT_A}&status=done`);
+    expect(list.body.items).toEqual([
+      expect.objectContaining({
+        id: jobId,
+        tenantId: TENANT_A,
+        tenantName: 'Tenant A',
+        product: 'ديزل',
+        category: null,
+        countries: ['SA', 'AE'],
+        status: 'done',
+        counts: { ranked: 2 },
+      }),
+    ]);
+  });
+
+  it('does nothing for a task delivered again after it finished', async () => {
+    await seedPool();
+    await createJob({ tenantId: TENANT_A, product: 'diesel', countries: ['SA'] });
+    const [job] = await queuedTasks();
+    await drive();
+
+    expect(await runTask(job!.data)).toBe('skipped');
+    expect((await discoveryEvents()).map((e) => e.type)).toEqual([
+      'discovery.job.created',
+      'discovery.task.finished',
+      'discovery.job.finished',
+    ]);
+  });
+
+  it('finishes the job exactly once when its tasks finish together', async () => {
+    await seedPool();
+    await createJob({ tenantId: TENANT_A, product: 'diesel', countries: ['SA', 'AE', 'EG', 'KW'] });
+    const jobs = await queuedTasks();
+
+    await Promise.all(jobs.map((job) => runTask(job.data)));
+
+    const types = (await discoveryEvents()).map((e) => e.type);
+    expect(types.filter((t) => t === 'discovery.task.finished')).toHaveLength(4);
+    expect(types.filter((t) => t === 'discovery.job.finished')).toHaveLength(1);
+  });
+});
+
+describe('tenants', () => {
+  it("keeps tenant A's job, tasks and results from tenant B", async () => {
+    await seedPool();
+    const created = await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: ['SA'] });
+    const jobId = created.body.job.id;
+    await setTerms(jobId, ['diesel']);
+    await drive();
+
+    const seen = (tenantId: string) =>
+      withTenant(tenantId, async (tx) => ({
+        jobs: (await tx`select id from discovery_jobs where id = ${jobId}`).length,
+        tasks: (await tx`select id from discovery_tasks where job_id = ${jobId}`).length,
+        results: (await tx`select id from discovery_results where job_id = ${jobId}`).length,
+      }));
+
+    expect(await seen(TENANT_A)).toEqual({ jobs: 1, tasks: 1, results: 2 });
+    expect(await seen(TENANT_B)).toEqual({ jobs: 0, tasks: 0, results: 0 });
+  });
+});
+
+describe('validation', () => {
+  it('refuses a bad country, an empty product, an unknown tenant and a missing token', async () => {
+    expect((await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: ['Saudi'] })).status).toBe(400);
+    expect((await createJob({ tenantId: TENANT_A, product: '', countries: ['SA'] })).status).toBe(400);
+    expect((await createJob({ tenantId: TENANT_A, product: '  x ', countries: ['SA'] })).status).toBe(400);
+    expect((await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: ['SA', 'sa'] })).status).toBe(400);
+    expect((await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: [] })).status).toBe(400);
+    expect(
+      (await createJob({ tenantId: '33333333-3333-3333-3333-333333333333', product: 'ديزل', countries: ['SA'] }))
+        .status,
+    ).toBe(404);
+
+    const body = { tenantId: TENANT_A, product: 'ديزل', countries: ['SA'] };
+    expect((await call('POST', '/internal/discovery/jobs', body, { internal: null })).status).toBe(401);
+    expect((await call('POST', '/internal/discovery/jobs', body, { internal: null, token: tokenA })).status).toBe(401);
+    expect((await call('GET', '/internal/discovery/jobs', undefined, { internal: null })).status).toBe(401);
+
+    expect(await db()`select id from discovery_jobs`).toHaveLength(0);
+    expect(await queuedTasks()).toHaveLength(0);
+  });
+
+  it('answers 404 for a job that does not exist', async () => {
+    const missing = '44444444-4444-4444-4444-444444444444';
+    expect((await call('GET', `/internal/discovery/jobs/${missing}`)).status).toBe(404);
+    expect((await call('GET', `/internal/discovery/jobs/${missing}/results`)).status).toBe(404);
+    expect((await call('GET', '/internal/discovery/jobs/not-a-uuid')).status).toBe(404);
+  });
+});
+
+describe('failure', () => {
+  async function attemptAll(job: QueuedTask) {
+    for (let attempt = 0; attempt <= TASK_RETRY_LIMIT; attempt += 1) {
+      await expect(runTask(job.data, { finalAttempt: attempt >= TASK_RETRY_LIMIT })).rejects.toThrow(
+        'finder exploded',
+      );
+    }
+  }
+
+  it('fails the task on its final attempt, and the job when every task failed', async () => {
+    registerFinder({
+      name: 'products',
+      async find() {
+        throw new Error('finder exploded');
+      },
+    });
+    try {
+      await seedPool();
+      const created = await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: ['SA'] });
+      const [job] = await queuedTasks();
+
+      await expect(runTask(job!.data, { finalAttempt: false })).rejects.toThrow('finder exploded');
+      const [midway] = await db()<{ status: string; error: string | null }[]>`
+        select status, error from discovery_tasks where id = ${job!.data.taskId}
+      `;
+      expect(midway).toEqual({ status: 'running', error: null });
+
+      await attemptAll(job!);
+
+      const detail = await call<JobDetail>('GET', `/internal/discovery/jobs/${created.body.job.id}`);
+      expect(detail.body.tasks[0]).toMatchObject({
+        status: 'failed',
+        stage: 'rank',
+        error: 'finder exploded',
+        attempts: TASK_RETRY_LIMIT + 2,
+      });
+      expect(detail.body.job.status).toBe('failed');
+
+      const events = await discoveryEvents();
+      expect(events.map((e) => e.type)).toEqual([
+        'discovery.job.created',
+        'discovery.task.failed',
+        'discovery.job.finished',
+      ]);
+      expect(events[1]!.payload).toMatchObject({ country: 'SA', error: 'finder exploded' });
+      expect(events[2]!.payload).toMatchObject({ status: 'failed' });
+    } finally {
+      registerFinder(productsFinder);
+    }
+  });
+
+  it('finishes the job done when at least one task is done', async () => {
+    registerFinder({
+      name: 'products',
+      async find(tx, tenantId, query) {
+        if (query.country === 'AE') throw new Error('finder exploded');
+        return productsFinder.find(tx, tenantId, query);
+      },
+    });
+    try {
+      await seedPool();
+      const created = await createJob({ tenantId: TENANT_A, product: 'ديزل', countries: ['SA', 'AE'] });
+      await setTerms(created.body.job.id, ['diesel']);
+      const [sa, ae] = await queuedTasks();
+
+      await runTask(sa!.data);
+      await attemptAll(ae!);
+
+      const detail = await call<JobDetail>('GET', `/internal/discovery/jobs/${created.body.job.id}`);
+      expect(detail.body.tasks.map((t) => [t.country, t.status])).toEqual([
+        ['SA', 'done'],
+        ['AE', 'failed'],
+      ]);
+      expect(detail.body.job).toMatchObject({ status: 'done', counts: { ranked: 2 } });
+    } finally {
+      registerFinder(productsFinder);
+    }
   });
 });
