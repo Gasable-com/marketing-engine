@@ -4,6 +4,7 @@ import { db, withTenant } from '../../../db/client.js';
 import {
   MAX_COUNTRIES,
   MAX_RESULT_LIMIT,
+  MAX_SOURCE_ROW,
   createJob,
   readRow,
 } from '../../../modules/discovery/index.js';
@@ -33,6 +34,8 @@ const createBody = z.object({
     .max(MAX_COUNTRIES)
     .refine((list) => new Set(list).size === list.length, 'each country once'),
   resultLimit: z.number().int().min(1).max(MAX_RESULT_LIMIT).optional(),
+  side: z.enum(['suppliers', 'buyers']).default('suppliers'),
+  row: z.string().max(MAX_SOURCE_ROW).optional(),
 });
 
 discoveryOperator.post('/internal/discovery/jobs', async (c) => {
@@ -69,7 +72,7 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
     .extend({
       cursor: z.string().uuid().optional(),
       tenantId: z.string().uuid().optional(),
-      status: z.enum(['running', 'done', 'failed']).optional(),
+      status: z.enum(['planning', 'running', 'done', 'failed']).optional(),
     })
     .safeParse(c.req.query());
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
@@ -77,7 +80,8 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
   const sql = db();
   const rows = await sql<Record<string, unknown>[]>`
     select j.id::text as id, j.tenant_id::text as "tenantId", t.name as "tenantName",
-           j.product, j.category, j.countries, j.status, j.counts,
+           j.product, j.category, j.side, j.countries, j.status, j.counts,
+           j.identified->>'name' as "identifiedName",
            j.created_at as "createdAt", j.finished_at as "finishedAt"
     from discovery_jobs j
     join tenants t on t.id = j.tenant_id
@@ -176,26 +180,56 @@ type ResultRow = {
   identifiers: { type: string; value: string }[];
 };
 
-/** A job with its tasks, in the shape both create and read return. */
+/**
+ * Why a job or task is not moving, when the engine knows: a deferral to the
+ * moment a Claude usage limit resets. Worked out here so no screen has to.
+ */
+const waiting = (deferredUntil: Date | null) =>
+  deferredUntil && deferredUntil.getTime() > Date.now()
+    ? { reason: 'usage_limit', until: deferredUntil }
+    : null;
+
+/** A job with its plan and tasks, in the shape both create and read return. */
 async function oneJob(id: string) {
   const sql = db();
-  const [job] = await sql<Record<string, unknown>[]>`
+  const [row] = await sql<(Record<string, unknown> & { deferredUntil: Date | null })[]>`
     select j.id::text as id, j.tenant_id::text as "tenantId", t.name as "tenantName",
            j.product, j.category, j.side, j.countries, j.terms,
-           j.result_limit as "resultLimit", j.status, j.counts,
-           j.created_at as "createdAt", j.finished_at as "finishedAt"
+           j.result_limit as "resultLimit", j.status, j.counts, j.identified, j.error,
+           j.source_row as "sourceRow", j.attempts, j.deferrals,
+           j.deferred_until as "deferredUntil",
+           j.created_at as "createdAt", j.started_at as "startedAt", j.finished_at as "finishedAt"
     from discovery_jobs j
     join tenants t on t.id = j.tenant_id
     where j.id = ${id}
   `;
-  if (!job) return undefined;
+  if (!row) return undefined;
+  const { deferredUntil, ...job } = row;
 
-  const tasks = await sql<Record<string, unknown>[]>`
-    select id::text as id, country, status, stage, counts, error, attempts,
+  const personas = await sql<Record<string, unknown>[]>`
+    select id::text as id, position, name, description, roles, sectors,
+           search_terms as "searchTerms", places_terms as "placesTerms", signals
+    from discovery_personas
+    where job_id = ${id}
+    order by position
+  `;
+
+  const tasks = await sql<(Record<string, unknown> & { deferredUntil: Date | null })[]>`
+    select id::text as id, country, status, stage, counts, error, attempts, deferrals,
+           deferred_until as "deferredUntil",
            created_at as "createdAt", started_at as "startedAt", finished_at as "finishedAt"
     from discovery_tasks
     where job_id = ${id}
     order by array_position(${job['countries'] as string[]}::text[], country), created_at
   `;
-  return { job, tasks };
+
+  return {
+    job: {
+      ...job,
+      waiting: waiting(deferredUntil),
+      live: job['status'] === 'planning' || job['status'] === 'running',
+    },
+    personas,
+    tasks: tasks.map(({ deferredUntil: until, ...task }) => ({ ...task, waiting: waiting(until) })),
+  };
 }
