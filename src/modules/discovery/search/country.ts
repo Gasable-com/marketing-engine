@@ -1,6 +1,6 @@
 import { withTenant } from '../../../db/client.js';
 import { foldText } from '../../../spine/registry/index.js';
-import { decide, evaluate } from '../../../spine/rules/index.js';
+import { allValues, decide, evaluate } from '../../../spine/rules/index.js';
 
 /**
  * How to search one country, from its `discovery.country` rule row: Google's
@@ -33,14 +33,21 @@ export async function countrySettings(tenantId: string, country: string): Promis
   };
 }
 
-/** Every place name a search term must not carry, for these countries. */
-export async function placeWords(tenantId: string, countries: string[]): Promise<string[]> {
+/**
+ * Every place name a search term must not carry: the names and cities of every
+ * country with a discovery.country row, in every spelling the row gives, not
+ * only the job's own countries (a persona term naming Dubai is no use in SA).
+ */
+export async function placeWords(tenantId: string): Promise<string[]> {
+  const all = await withTenant(tenantId, (tx) =>
+    allValues<Partial<CountrySettings>>(tx, 'discovery.country', {}),
+  );
   const words: string[] = [];
-  for (const country of countries) {
-    const s = await countrySettings(tenantId, country);
-    words.push(...s.names, ...s.cities.flatMap((c) => Object.values(c)));
+  for (const s of all) {
+    if (Array.isArray(s.names)) words.push(...s.names);
+    if (Array.isArray(s.cities)) words.push(...s.cities.flatMap((c) => Object.values(c)));
   }
-  return [...new Set(words.map(foldText).filter(Boolean))];
+  return [...new Set(words.filter((w) => typeof w === 'string').map(foldText).filter(Boolean))];
 }
 
 export function namesAPlace(term: string, places: string[]): boolean {

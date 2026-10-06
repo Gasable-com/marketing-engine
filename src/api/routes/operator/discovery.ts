@@ -169,7 +169,12 @@ discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {
     .extend({
       cursor: z.string().uuid().optional(),
       country: country.optional(),
-      status: z.enum(['new', 'kept', 'dropped']).optional(),
+      // One status or several, comma-separated: `kept,new`.
+      status: z
+        .string()
+        .transform((v) => v.split(',').map((x) => x.trim()).filter(Boolean))
+        .pipe(z.array(z.enum(['new', 'kept', 'dropped'])).min(1))
+        .optional(),
     })
     .safeParse(c.req.query());
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
@@ -196,7 +201,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {
     join discovery_tasks k on k.id = d.task_id
     where d.job_id = ${id.data}
       ${q.data.country ? sql`and k.country = ${q.data.country}` : sql``}
-      ${q.data.status ? sql`and d.status = ${q.data.status}` : sql``}
+      ${q.data.status ? sql`and d.status = any(${q.data.status}::text[])` : sql``}
     order by ${order}
   `;
 

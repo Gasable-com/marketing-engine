@@ -307,7 +307,7 @@ const personas: PlanStage = {
     if (!parsed.success) throw new Error('claude bridge: personas answer out of shape');
 
     // The country is added when searching, from its discovery.country row.
-    const places = await placeWords(job.tenant_id, job.countries);
+    const places = await placeWords(job.tenant_id);
     const clean = (terms: string[]) => [...new Set(terms.filter((t) => !namesAPlace(t, places)))];
     const list: Persona[] = parsed.data.personas.map((p) => ({
       ...p,

@@ -669,11 +669,23 @@ function Results({ jobId, country, version }: { jobId: string; country: string; 
  */
 function Candidates({ jobId, country, version }: { jobId: string; country: string; version: string }) {
   const [showDropped, setShowDropped] = useState(false);
-  const status = showDropped ? '' : 'kept';
+  const [rows, setRows] = useState<DiscoveryCandidate[]>([]);
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  // Kept and not-yet-triaged by default; everything with the toggle.
+  const status = showDropped ? '' : 'kept,new';
+
+  useEffect(() => setCursor(undefined), [jobId, country, status, version]);
+
   const answer = useAsync(
-    () => api.discoveryCandidates(jobId, { country, status, limit: 500 }),
-    [jobId, country, status, version],
+    async () => ({ used: cursor, result: await api.discoveryCandidates(jobId, { country, status, cursor, limit: 200 }) }),
+    [jobId, country, status, cursor, version],
   );
+  useEffect(() => {
+    if (answer.state.status !== 'ok') return;
+    const { used, result } = answer.state.data;
+    setRows((current) => (used ? [...current, ...result.items] : result.items));
+  }, [answer.state]);
+  const next = answer.state.status === 'ok' ? answer.state.data.result.nextCursor : null;
 
   return (
     <>
@@ -687,12 +699,11 @@ function Candidates({ jobId, country, version }: { jobId: string; country: strin
           show everything, including what triage dropped
         </label>
       </div>
-      {answer.state.status === 'loading' ? <Loading what="candidates" /> : null}
+      {answer.state.status === 'loading' && rows.length === 0 ? <Loading what="candidates" /> : null}
       {answer.state.status === 'error' ? <Failed error={answer.state.error} what="candidates" /> : null}
-      {answer.state.status === 'ok' && answer.state.data.items.length === 0 ? <Empty what="candidates yet" /> : null}
-      {answer.state.status === 'ok' && answer.state.data.items.length > 0 ? (
-        <CandidateTable rows={answer.state.data.items} />
-      ) : null}
+      {answer.state.status === 'ok' && rows.length === 0 ? <Empty what="candidates yet" /> : null}
+      {rows.length > 0 ? <CandidateTable rows={rows} /> : null}
+      <Pager cursor={next} onMore={() => setCursor(next ?? undefined)} />
     </>
   );
 }

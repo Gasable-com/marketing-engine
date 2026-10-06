@@ -1156,7 +1156,7 @@ Ranked best first (`rank` is 1.. within each country), paged with `limit` and
 `profile` is `null` for a company without one. `identifiers` are its
 `domain`, `email`, `gmaps` and `phone` values.
 
-#### `GET /internal/discovery/jobs/:id/candidates?country=&status=`
+#### `GET /internal/discovery/jobs/:id/candidates?country=&status=kept,new`
 
 What the job's searches turned up, one row per company, kept first (strong fits
 before weak), then new, then dropped; paged with `limit` and `cursor`. Each row:
@@ -1164,7 +1164,12 @@ before weak), then new, then dropped; paged with `limit` and `cursor`. Each row:
 `url`, `phone`, `address`, `category`, `snippets` (up to five
 `{ query, title, snippet }`), `personas` (`id`, `name`), `fit` (`strong`,
 `weak` or `null`), `status` (`new`, `kept`, `dropped`), `reason` and
-`companyId` (set when the domain or Maps id is already in the pool).
+`companyId` (set when the domain or Maps id is already in the pool). `status`
+takes one status or several, comma-separated. A candidate whose phone belongs
+to a pool company is not matched by it (a phone is weak); its reason notes
+`phone matches <company>`. Only terms in one of the country's `languages` are
+searched, and a Maps listing whose own website is a blocked host is dropped
+like the website.
 
 **How a task searches** (with `SERPER_API_KEY` and the Claude bridge both
 set; with either unset `search` and `triage` are skipped and counted as
@@ -1194,9 +1199,9 @@ and `AE`; a country without one searches with `gl` = its code. A country's
 `names` and `cities` are also the place names a persona's terms may not carry.
 `discovery.blocked_hosts` is a deny rule checked per candidate domain with
 context `{ host }`, e.g. `{"in": [{"var": "host"}, ["example.com"]]}`; the
-platform row lists directories, marketplaces, job boards and news sites, and a
-tenant adds hosts with its own row (`POST /v1/rules`) but cannot lift the
-platform's.
+platform row lists directories, marketplaces, job boards and news sites. A
+tenant's own rows add to it and can never lift it; they are written by step
+21's "block a domain" action (until then, as a tenant row in `rules`).
 
 **How `rank` scores.** A product term matches a profile product when the
 folded term is inside the folded product, or their trigram similarity is at

@@ -1,6 +1,6 @@
 import { db, withTenant } from '../../../db/client.js';
 import { env } from '../../../env.js';
-import { findByIdentifier, isSharedHost, normalizeDomain } from '../../../spine/registry/index.js';
+import { findByIdentifier, isSharedHost, normalizeDomain, normalizeIdentifiers } from '../../../spine/registry/index.js';
 import { ask, bridgeConfigured } from '../claude.js';
 import { PermanentError, UsageLimitError } from '../errors.js';
 import type { Counts, JobRow, PersonaRow, TaskRow } from '../jobs.js';
@@ -29,22 +29,34 @@ async function personasOf(job: JobRow): Promise<PersonaRow[]> {
   `);
 }
 
-/** Every query one persona wants in this country, in the order to ask them. */
+/**
+ * Every query one persona wants in this country, in the order to ask them:
+ * web and Maps alternating, so a cap never leaves out Maps. Only terms in one
+ * of the country's languages are asked.
+ */
 function queriesFor(persona: PersonaRow, country: CountrySettings): Planned[] {
-  const out: Planned[] = [];
+  const web: Planned[] = [];
   for (const term of persona.search_terms) {
     const hl = isArabic(term) ? 'ar' : 'en';
-    out.push({ kind: 'web', q: term, hl, personaId: persona.id });
+    if (!country.languages.includes(hl)) continue;
+    web.push({ kind: 'web', q: term, hl, personaId: persona.id });
     const suffix = country.suffix[hl];
-    if (suffix) out.push({ kind: 'web', q: `${term} ${suffix}`, hl, personaId: persona.id });
+    if (suffix) web.push({ kind: 'web', q: `${term} ${suffix}`, hl, personaId: persona.id });
   }
+  const places: Planned[] = [];
   for (const term of persona.places_terms) {
     const hl = isArabic(term) ? 'ar' : 'en';
-    out.push({ kind: 'places', q: term, hl, personaId: persona.id });
+    if (!country.languages.includes(hl)) continue;
+    places.push({ kind: 'places', q: term, hl, personaId: persona.id });
     for (const city of country.cities.slice(0, 3)) {
       const name = city[hl] ?? city['en'];
-      if (name) out.push({ kind: 'places', q: `${term} ${name}`, hl, personaId: persona.id });
+      if (name) places.push({ kind: 'places', q: `${term} ${name}`, hl, personaId: persona.id });
     }
+  }
+  const out: Planned[] = [];
+  for (let i = 0; i < Math.max(web.length, places.length); i += 1) {
+    if (web[i]) out.push(web[i]!);
+    if (places[i]) out.push(places[i]!);
   }
   return out;
 }
@@ -70,6 +82,8 @@ type Candidate = {
   kind: 'web' | 'maps' | 'both';
   domain: string | null;
   gmaps: string | null;
+  /** Google's place id, when Serper gave one: a second way to know a listing. */
+  placeId: string | null;
   name: string;
   url: string | null;
   phone: string | null;
@@ -85,6 +99,7 @@ function blank(fields: Partial<Candidate> & Pick<Candidate, 'kind' | 'name'>): C
   return {
     domain: null,
     gmaps: null,
+    placeId: null,
     url: null,
     phone: null,
     address: null,
@@ -108,7 +123,8 @@ export async function runSearch(job: JobRow, task: TaskRow): Promise<Counts> {
   const personas = await personasOf(job);
   if (personas.length === 0) return { queries: 0 };
 
-  const cap = Math.max(1, Math.min(e.DISCOVERY_MAX_QUERIES, Math.floor(e.DISCOVERY_MAX_QUERIES_PER_JOB / job.countries.length)));
+  // Each task gets its share of the job's cap; a share of 0 searches nothing.
+  const cap = Math.min(e.DISCOVERY_MAX_QUERIES, Math.floor(e.DISCOVERY_MAX_QUERIES_PER_JOB / job.countries.length));
   const planned = interleave(personas.map((p) => queriesFor(p, country)));
   const queries = planned.slice(0, cap);
 
@@ -164,22 +180,41 @@ export async function runSearch(job: JobRow, task: TaskRow): Promise<Counts> {
   // it names whichever query found which.
   for (const { q, personaId, hit } of places) {
     const site = hit.website ? normalizeDomain(hit.website) : null;
-    const domain = site && !isSharedHost(site) && !(await blocked(site)) ? site : null;
     const snippet = [hit.category, hit.address].filter(Boolean).join(' — ');
 
-    let c = (domain && byDomain.get(domain)) || (hit.cid ? byPlace.get(hit.cid) : undefined);
+    // A listing whose own website is blocked is the blocked company: drop it.
+    // One whose "website" is a shared host (an Instagram page) keeps its Maps id.
+    if (site && !isSharedHost(site) && (await blocked(site))) {
+      if (!dropped.has(site)) {
+        dropped.set(site, blank({ kind: 'maps', domain: site, name: hit.title, url: hit.website, status: 'dropped', reason: 'blocked host' }));
+      }
+      note(dropped.get(site)!, q, hit.title, snippet, personaId);
+      continue;
+    }
+    const domain = site && !isSharedHost(site) ? site : null;
+
+    // The candidate already holding this Maps id wins, so one id is never on
+    // two candidates; otherwise the website's candidate takes the listing.
+    const owner = hit.cid ? byPlace.get(hit.cid) : undefined;
+    let c = owner ?? (domain ? byDomain.get(domain) : undefined);
     if (c) {
       if (c.kind === 'web') c.kind = 'both';
-      c.gmaps ??= hit.cid;
+      if (!c.gmaps && hit.cid && !owner) c.gmaps = hit.cid;
+      c.placeId ??= hit.placeId;
       c.phone ??= hit.phoneNumber;
       c.address ??= hit.address;
       c.category ??= hit.category;
+      if (!c.domain && domain && !byDomain.has(domain)) {
+        c.domain = domain;
+        byDomain.set(domain, c);
+      }
     } else {
       if (!hit.cid && !domain) continue;
       c = blank({
-        kind: domain ? 'both' : 'maps',
+        kind: 'maps',
         domain,
         gmaps: hit.cid,
+        placeId: hit.placeId,
         name: hit.title,
         url: hit.website,
         phone: hit.phoneNumber,
@@ -188,7 +223,7 @@ export async function runSearch(job: JobRow, task: TaskRow): Promise<Counts> {
       });
       if (domain) byDomain.set(domain, c);
     }
-    if (hit.cid) byPlace.set(hit.cid, c);
+    if (hit.cid && c.gmaps === hit.cid) byPlace.set(hit.cid, c);
     note(c, q, hit.title, snippet, personaId);
   }
 
@@ -202,7 +237,13 @@ export async function runSearch(job: JobRow, task: TaskRow): Promise<Counts> {
       // easily to say which company a listing is.
       const company =
         (c.domain ? await findByIdentifier(tx, 'domain', c.domain) : undefined) ??
-        (c.gmaps ? await findByIdentifier(tx, 'gmaps', c.gmaps) : undefined);
+        (c.gmaps ? await findByIdentifier(tx, 'gmaps', c.gmaps) : undefined) ??
+        (c.placeId ? await findByIdentifier(tx, 'gmaps', c.placeId) : undefined);
+      if (!company && c.phone && c.status === 'new') {
+        const [phone] = normalizeIdentifiers([{ type: 'phone', value: c.phone }], { defaultCountry: task.country }).identifiers;
+        const byPhone = phone ? await findByIdentifier(tx, 'phone', phone.value) : undefined;
+        if (byPhone) c.reason = `phone matches ${byPhone.name}`.slice(0, MAX_REASON);
+      }
       await tx`
         insert into discovery_candidates
           (tenant_id, job_id, task_id, kind, domain, gmaps, name, url, phone, address, category,
@@ -259,11 +300,6 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
     for (const r of rows) profiles.set(r.company_id, { products: r.products, roles: r.roles, cities: r.cities });
   }
 
-  let kept = 0;
-  let droppedCount = 0;
-  let failed = 0;
-  let calls = 0;
-
   for (let i = 0; i < pending.length; i += TRIAGE_BATCH) {
     const batch = pending.slice(i, i + TRIAGE_BATCH);
     const ids = new Set(batch.map((c) => c.id));
@@ -287,7 +323,12 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
 
     let verdicts: Verdict[] | null = null;
     for (let attempt = 0; attempt < 2 && !verdicts; attempt += 1) {
-      calls += 1;
+      // Counted on the task as it happens, so a deferral loses no calls.
+      await withTenant(job.tenant_id, (tx) => tx`
+        update discovery_tasks
+        set counts = counts || jsonb_build_object('claude_calls', coalesce((counts->>'claude_calls')::int, 0) + 1)
+        where id = ${task.id}
+      `);
       try {
         const parsed = Triage.safeParse(
           await ask('triage', { system: triagePrompt.system, schema: triagePrompt.schema, input }),
@@ -297,10 +338,7 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
         if (err instanceof UsageLimitError || err instanceof PermanentError) throw err;
       }
     }
-    if (!verdicts) {
-      failed += batch.length;
-      continue;
-    }
+    if (!verdicts) continue;
 
     await withTenant(job.tenant_id, async (tx) => {
       for (const v of verdicts) {
@@ -311,15 +349,24 @@ export async function runTriage(job: JobRow, task: TaskRow): Promise<Counts> {
             fit = ${keep ? (v.fit ?? 'weak') : null},
             persona_ids = case when ${keep && v.personaIds.length > 0}
                                then ${v.personaIds}::uuid[] else persona_ids end,
-            reason = ${v.reason.trim().slice(0, MAX_REASON)}
+            reason = case when reason like 'phone matches %'
+                          then left(${v.reason.trim().slice(0, MAX_REASON)} || ' · ' || reason, 240)
+                          else ${v.reason.trim().slice(0, MAX_REASON)} end
           where id = ${v.id} and task_id = ${task.id} and status = 'new'
         `;
-        keep ? (kept += 1) : (droppedCount += 1);
       }
     });
   }
 
-  return { kept, dropped: droppedCount, triage_failed: failed, claude_calls: calls };
+  // From the table, so a stage resumed after a deferral still counts every
+  // batch: search drops (shared or blocked hosts) are not triage's.
+  const [tally] = await withTenant(job.tenant_id, (tx) => tx<{ kept: number; dropped: number; failed: number }[]>`
+    select count(*) filter (where status = 'kept')::int as kept,
+           count(*) filter (where status = 'dropped' and coalesce(reason, '') not in ('shared host', 'blocked host'))::int as dropped,
+           count(*) filter (where status = 'new')::int as failed
+    from discovery_candidates where task_id = ${task.id}
+  `);
+  return { kept: tally?.kept ?? 0, dropped: tally?.dropped ?? 0, triage_failed: tally?.failed ?? 0 };
 }
 
 /** Exactly one verdict per candidate sent, and only the job's own personas. */

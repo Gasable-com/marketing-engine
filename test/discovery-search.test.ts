@@ -199,10 +199,18 @@ describe('search', () => {
     expect(byDomain(candidates, 'yellowpages.com.sa')).toMatchObject({ status: 'dropped', reason: 'blocked host' });
     expect(byDomain(candidates, 'arabnews.com')).toMatchObject({ status: 'dropped', reason: 'blocked host' });
     // Kept first in the list.
-    expect(candidates.slice(0, 5).every((c) => c.status === 'kept')).toBe(true);
+    expect(candidates.slice(0, 6).every((c) => c.status === 'kept')).toBe(true);
 
     const counts = detail.tasks[0]!.counts;
-    expect(counts).toMatchObject({ candidates: 5, kept: 5, dropped: 0, dropped_shared: 1, dropped_blocked: 2, triage_failed: 0 });
+    expect(counts).toMatchObject({ candidates: 6, kept: 6, dropped: 0, dropped_shared: 1, dropped_blocked: 2, triage_failed: 0 });
+
+    // A listing with a website of its own that no web hit reached is still a Maps find.
+    expect(byDomain(candidates, 'desertfuel.sa')).toMatchObject({ kind: 'maps', gmaps: '5550000000000000005' });
+    // A listing whose website is blocked is dropped with it, never kept as Maps-only.
+    expect(candidates.find((c) => c.gmaps === '4440000000000000004')).toBeUndefined();
+    // One Maps id is on one candidate only, even when a listing names another site.
+    expect(candidates.filter((c) => c.gmaps === '1110000000000000001')).toHaveLength(1);
+    expect(byDomain(candidates, 'gulf-fuel.com')!.gmaps).toBeNull();
     expect(counts['serper_calls']).toBe(counts['queries']);
     expect(counts['cache_hits']).toBe(0);
     expect(detail.tasks[0]!.status).toBe('done');
@@ -266,8 +274,13 @@ describe('search', () => {
     const { detail } = await search({ product: 'diesel', side: 'suppliers' });
     expect(detail.tasks[0]!.counts).toMatchObject({ queries: 3 });
     expect(detail.tasks[0]!.counts['queries_capped']).toBeGreaterThan(0);
-    // Persona 1, persona 2, persona 1.
-    expect(serper.calls.map((c) => c.q)).toEqual(['diesel fuel supplier', 'fuel wholesaler', 'diesel fuel supplier Saudi Arabia']);
+    // Persona 1's first web query, persona 2's, then persona 1's first Maps query:
+    // personas take turns, and web and Maps alternate within each.
+    expect(serper.calls.map((c) => [c.path, c.q])).toEqual([
+      ['/search', 'diesel fuel supplier'],
+      ['/search', 'fuel wholesaler'],
+      ['/places', 'diesel supplier'],
+    ]);
 
     delete process.env.DISCOVERY_MAX_QUERIES;
     process.env.DISCOVERY_MAX_QUERIES_PER_JOB = '4';
@@ -301,7 +314,7 @@ describe('search', () => {
       return ok(n === 1 ? { verdicts: full.verdicts.slice(1) } : full);
     };
     const first = await search({ product: 'diesel', side: 'suppliers' });
-    expect(first.detail.tasks[0]!.counts).toMatchObject({ claude_calls: 2, kept: 5, triage_failed: 0 });
+    expect(first.detail.tasks[0]!.counts).toMatchObject({ claude_calls: 2, kept: 6, triage_failed: 0 });
 
     bridge.calls = [];
     bridge.handler = (task, input) => {
@@ -311,8 +324,8 @@ describe('search', () => {
     };
     const second = await search({ product: 'diesel', side: 'suppliers' });
     expect(second.detail.tasks[0]).toMatchObject({ status: 'done' });
-    expect(second.detail.tasks[0]!.counts).toMatchObject({ claude_calls: 2, kept: 0, triage_failed: 5 });
-    expect(second.candidates.filter((c) => c.status === 'new')).toHaveLength(5);
+    expect(second.detail.tasks[0]!.counts).toMatchObject({ claude_calls: 2, kept: 0, triage_failed: 6 });
+    expect(second.candidates.filter((c) => c.status === 'new')).toHaveLength(6);
   });
 
   it('matches candidates to the pool by domain, never by phone', async () => {
@@ -324,7 +337,33 @@ describe('search', () => {
     );
     const { candidates } = await search({ product: 'diesel', side: 'suppliers' });
     expect(byDomain(candidates, 'gulf-fuel.com')!.companyId).toBe(byDomainCompany.company.id);
-    expect(candidates.find((c) => c.gmaps === '2220000000000000002')!.companyId).toBeNull();
+    const byPhone = candidates.find((c) => c.gmaps === '2220000000000000002')!;
+    expect(byPhone.companyId).toBeNull();
+    // The phone is only noted, after triage's own reason.
+    expect(byPhone.reason).toBe('looks like a supplier · phone matches Somebody Else');
+  });
+
+  it('counts every triage call and verdict across a usage-limit deferral', async () => {
+    bridge.handler = (task, input, n) => {
+      if (task === 'identify') return ok(DIESEL);
+      if (task === 'personas') return ok(DIESEL_PERSONAS);
+      return n === 1 ? { status: 429, body: { error: 'usage_limit', resetsAt: null } } : ok(triage(input));
+    };
+    const { detail } = await search({ product: 'diesel', side: 'suppliers' });
+    expect(detail.tasks[0]).toMatchObject({ status: 'done' });
+    expect(detail.tasks[0]!.counts).toMatchObject({ kept: 6, triage_failed: 0, claude_calls: 2 });
+  });
+
+  it('searches a country with no row in English only, and cleans every country’s place names from terms', async () => {
+    plan(DIESEL, {
+      personas: [
+        { ...DIESEL_PERSONAS.personas[0]!, searchTerms: ['diesel fuel supplier', 'diesel supplier Dubai', 'diesel makkah', 'توريد ديزل'] },
+      ],
+    });
+    const { jobId } = await search({ product: 'diesel', side: 'suppliers', countries: ['EG'] });
+    expect(serper.calls.every((c) => c.hl === 'en' && c.gl === 'eg')).toBe(true);
+    const [persona] = await db()<{ search_terms: string[] }[]>`select search_terms from discovery_personas where job_id = ${jobId}`;
+    expect(persona!.search_terms).toEqual(['diesel fuel supplier', 'توريد ديزل']);
   });
 
   it('makes no Serper call without the bridge, and ranks as before', async () => {
