@@ -17,26 +17,39 @@ alter table marketing.company_profiles
   add column if not exists quality     text null,
   add column if not exists profiled_at timestamptz null;
 
+-- Whether every element is an ISO 3166-1 alpha-2 code in upper case. A
+-- function, because a check constraint cannot look inside an array: matching
+-- the joined string would let a NULL element or an 'SA,AE' element through.
+create or replace function marketing.is_country_codes(codes text[]) returns boolean
+language sql immutable parallel safe
+as $$
+  select coalesce(bool_and(coalesce(c ~ '^[A-Z]{2}$', false)), true) from unnest(codes) as c
+$$;
+
+-- Whether no element appears twice.
+create or replace function marketing.is_distinct_list(items text[]) returns boolean
+language sql immutable parallel safe
+as $$
+  select count(*) = count(distinct i) from unnest(items) as i
+$$;
+
 alter table marketing.company_profiles
   drop constraint if exists company_profiles_roles_check,
   add constraint company_profiles_roles_check check (
     roles <@ array['manufacturer', 'distributor', 'wholesaler', 'retailer',
                    'installer', 'service_provider', 'transporter', 'other']::text[]
   ),
-  -- ISO 3166-1 alpha-2, upper case: every element two capital letters.
   drop constraint if exists company_profiles_countries_check,
-  add constraint company_profiles_countries_check check (
-    array_to_string(countries, ',') ~ '^([A-Z]{2}(,[A-Z]{2})*)?$'
-  ),
+  add constraint company_profiles_countries_check check (marketing.is_country_codes(countries)),
   drop constraint if exists company_profiles_quality_check,
   add constraint company_profiles_quality_check check (quality in ('full', 'thin'));
 
 -- ---------------------------------------------------------------------------
 -- fold_text: the letter folding of names.ts foldText(), in SQL
 -- ---------------------------------------------------------------------------
--- The products finder folds its terms with foldText() and compares them to
--- stored product names folded here, so both sides fold the same way without
--- keeping a second, folded copy of every profile. Lower case, Arabic marks
+-- The products finder folds both its terms and the stored product names with
+-- this at query time, so the two sides of a comparison always fold the same
+-- way, without keeping a second, folded copy of every profile. Lower case, Arabic marks
 -- and tatweel stripped, أ/إ/آ/ٱ → ا, ة → ه, ى/ئ → ي, ؤ → و, anything that is
 -- not a letter or digit to one space. test/discovery-jobs.test.ts holds the
 -- two to the same answers.
@@ -83,7 +96,8 @@ create table if not exists marketing.discovery_jobs (
   side         text not null default 'suppliers' check (side in ('suppliers')),
   countries    text[] not null check (
                  cardinality(countries) between 1 and 10
-                 and array_to_string(countries, ',') ~ '^[A-Z]{2}(,[A-Z]{2})*$'
+                 and marketing.is_country_codes(countries)
+                 and marketing.is_distinct_list(countries)
                ),
   -- Search terms. Step 19 fills them; until then a job ranks on its product.
   terms        text[] not null default '{}',
