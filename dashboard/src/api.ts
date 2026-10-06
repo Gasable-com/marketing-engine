@@ -443,6 +443,26 @@ export type DiscoveryResult = {
   identifiers: { type: string; value: string }[];
 };
 
+/** A company a task's searches turned up, and what triage made of it. */
+export type DiscoveryCandidate = {
+  id: string;
+  country: string;
+  kind: 'web' | 'maps' | 'both';
+  domain: string | null;
+  gmaps: string | null;
+  name: string;
+  url: string | null;
+  phone: string | null;
+  address: string | null;
+  category: string | null;
+  snippets: { query: string; title: string; snippet: string }[];
+  personas: { id: string; name: string }[];
+  fit: 'strong' | 'weak' | null;
+  status: string;
+  reason: string | null;
+  companyId: string | null;
+};
+
 /** What the engine read out of a pasted row. */
 export type RowReading = {
   product: string;
@@ -507,6 +527,8 @@ export const api = {
   discoveryJob: (id: string) => get<DiscoveryJobDetail>(`/discovery/jobs/${id}`),
   discoveryResults: (id: string, params: Params) =>
     get<Page<DiscoveryResult>>(`/discovery/jobs/${id}/results`, params),
+  discoveryCandidates: (id: string, params: Params) =>
+    get<Page<DiscoveryCandidate>>(`/discovery/jobs/${id}/candidates`, params),
   createDiscoveryJob: (body: NewDiscoveryJob) => send<DiscoveryJobDetail>('/discovery/jobs', body),
   readRow: (row: string) => send<RowReading>('/discovery/read-row', { row }),
 

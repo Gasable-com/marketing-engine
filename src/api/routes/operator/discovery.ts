@@ -162,6 +162,51 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
   );
 });
 
+discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {
+  const id = z.string().uuid().safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+  const q = listQuery
+    .extend({
+      cursor: z.string().uuid().optional(),
+      country: country.optional(),
+      status: z.enum(['new', 'kept', 'dropped']).optional(),
+    })
+    .safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
+
+  const sql = db();
+  const [job] = await sql`select id from discovery_jobs where id = ${id.data}`;
+  if (!job) return c.json({ error: 'not found' }, 404);
+
+  // Kept first, then new, then dropped; the strongest fits first among the kept.
+  const order = sql`
+    case d.status when 'kept' then 0 when 'new' then 1 else 2 end,
+    case d.fit when 'strong' then 0 when 'weak' then 1 else 2 end,
+    d.created_at, d.id
+  `;
+  const rows = await sql<Record<string, unknown>[]>`
+    select d.id::text as id, k.country, d.kind, d.domain, d.gmaps, d.name, d.url, d.phone,
+           d.address, d.category, d.snippets, d.fit, d.status, d.reason,
+           d.company_id::text as "companyId",
+           coalesce((
+             select json_agg(json_build_object('id', p.id, 'name', p.name) order by p.position)
+             from discovery_personas p where p.id = any(d.persona_ids)
+           ), '[]'::json) as personas
+    from discovery_candidates d
+    join discovery_tasks k on k.id = d.task_id
+    where d.job_id = ${id.data}
+      ${q.data.country ? sql`and k.country = ${q.data.country}` : sql``}
+      ${q.data.status ? sql`and d.status = ${q.data.status}` : sql``}
+    order by ${order}
+  `;
+
+  // A job's candidates are capped by its queries, so they are read whole and
+  // paged in the order above; the cursor is the last row's id.
+  const start = q.data.cursor ? rows.findIndex((r) => r['id'] === q.data.cursor) + 1 : 0;
+  const items = rows.slice(start, start + q.data.limit);
+  return c.json(page(items, q.data.limit));
+});
+
 type ResultRow = {
   id: string;
   rank: number;
