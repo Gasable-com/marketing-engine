@@ -6,6 +6,8 @@ import { ask, bridgeConfigured, reserveClaudeCall } from './claude.js';
 import { DiscoveryError, PermanentError, UsageLimitError } from './errors.js';
 import { getFinder, type FinderQuery } from './finder/index.js';
 import { Identified, Personas, identifyPrompt, personasPrompt, type Persona } from './prompts.js';
+import { normalizeName } from '../../spine/registry/index.js';
+import { finishRfqSearch } from './rfq.js';
 import { namesAPlace, placeWords } from './search/country.js';
 import { runSearch, runTriage, searchNeeds } from './search/stages.js';
 import { runReadExtract } from './extract/stage.js';
@@ -57,6 +59,12 @@ export type JobRow = {
   identified: Identified | null;
   /** The operator confirmed the product before the search began, e.g. by picking a "did you mean". */
   product_confirmed: boolean;
+  /** The portal's opaque ids: who asked, for which catalog product, which RFQ line. */
+  requester_ref: string | null;
+  product_ref: string | null;
+  rfq_search_id: string | null;
+  line_ref: string | null;
+  line_position: number | null;
   stages_done: string[];
   error: string | null;
   attempts: number;
@@ -123,6 +131,12 @@ export type JobInput = {
   identified?: Identified | undefined;
   /** The operator confirmed `product` is what they mean, e.g. a "did you mean" they picked. */
   confirmed?: boolean | undefined;
+  /** The portal's own id for the supplier or corporate that asked. Stored, never looked up. */
+  requesterRef?: string | undefined;
+  /** The portal's catalog product id: a product searched again reuses its identification. */
+  productRef?: string | undefined;
+  /** For one line of an RFQ search. */
+  rfq?: { searchId: string; lineRef: string | null; position: number } | undefined;
 };
 
 /**
@@ -162,17 +176,21 @@ export async function createJob(
     );
   }
 
-  // An identification the operator already accepted is the plan's first stage, done.
-  const identified = plans && input.identified ? input.identified : null;
+  // An identification the operator already accepted is the plan's first stage,
+  // done; so is the one this catalog product got the last time it was searched.
+  const identified = plans ? (input.identified ?? (await earlierIdentification(tx, input, product))) : null;
   const terms = identified && side === 'suppliers' ? identified.aliases : [];
   const [job] = await tx<JobRow[]>`
     insert into discovery_jobs
       (tenant_id, product, category, side, countries, result_limit, source_row, status,
-       identified, terms, stages_done, product_confirmed)
+       identified, terms, stages_done, product_confirmed,
+       requester_ref, product_ref, rfq_search_id, line_ref, line_position)
     values (${input.tenantId}, ${product}, ${category}, ${side}, ${countries}, ${resultLimit},
             ${row}, ${plans ? 'planning' : 'running'},
             ${identified ? tx.json(identified as never) : null}, ${terms},
-            ${identified ? ['identify'] : []}, ${Boolean(identified) || input.confirmed === true})
+            ${identified ? ['identify'] : []}, ${Boolean(identified) || input.confirmed === true},
+            ${input.requesterRef ?? null}, ${input.productRef ?? null}, ${input.rfq?.searchId ?? null},
+            ${input.rfq?.lineRef ?? null}, ${input.rfq?.position ?? null})
     returning *
   `;
   if (!job) throw new Error('createJob wrote no job');
@@ -190,6 +208,23 @@ export async function createJob(
     return { job, tasks: [] };
   }
   return { job, tasks: await startTasks(tx, job) };
+}
+
+/**
+ * The identification an earlier search of the same catalog product got, when
+ * the product text has not changed since: the portal's catalog is the same
+ * product every time, so Claude need not be asked again.
+ */
+async function earlierIdentification(tx: Tx, input: JobInput, product: string): Promise<Identified | null> {
+  if (!input.productRef) return null;
+  const [earlier] = await tx<{ identified: Identified }[]>`
+    select identified from discovery_jobs
+    where tenant_id = ${input.tenantId} and product_ref = ${input.productRef}
+      and product = ${product} and identified is not null
+    order by created_at desc
+    limit 1
+  `;
+  return earlier?.identified ?? null;
 }
 
 function validate(input: JobInput) {
@@ -457,6 +492,35 @@ export async function identifyProduct(input: {
   return parsed.data;
 }
 
+export type DidYouMean = {
+  question: string;
+  asked: string;
+  best: { name: string; nameAr: string; description: string } | null;
+  alternatives: { name: string; nameAr: string; description: string }[];
+};
+
+/**
+ * Whether to ask "did you mean", and with what: only when Claude was unsure
+ * and has readings other than the words as typed, which "as typed" covers.
+ */
+export function didYouMeanFor(asked: string, identified: Identified | null): DidYouMean | null {
+  if (!identified || identified.confidence !== 'unsure') return null;
+  const isAsked = (name: string) => normalizeName(name) === normalizeName(asked);
+  const best = !isAsked(identified.name)
+    ? { name: identified.name, nameAr: identified.nameAr, description: identified.description }
+    : null;
+  const alternatives = identified.alternatives.filter(
+    (a) => !isAsked(a.name) && normalizeName(a.name) !== normalizeName(best?.name ?? ''),
+  );
+  if (!best && alternatives.length === 0) return null;
+  return {
+    question: `Did you mean one of these? "${asked}" is not a product we can be sure of.`,
+    asked,
+    best,
+    alternatives,
+  };
+}
+
 async function readJob(tenantId: string, jobId: string): Promise<JobRow | undefined> {
   const [job] = await withTenant(tenantId, (tx) => tx<JobRow[]>`select * from discovery_jobs where id = ${jobId}`);
   return job;
@@ -512,9 +576,20 @@ async function failPlan(job: JobRow, error: string): Promise<void> {
       type: 'discovery.job.finished',
       subjectType: 'discovery_job',
       subjectId: failed.id,
-      payload: { jobId: failed.id, status: 'failed', counts: failed.counts, error },
+      payload: { jobId: failed.id, status: 'failed', counts: failed.counts, error, ...portalRefs(failed) },
     });
+    if (failed.rfq_search_id) await finishRfqSearch(tx, failed.rfq_search_id);
   });
+}
+
+/** The portal's references, on every event a portal waits for. */
+function portalRefs(job: JobRow) {
+  return {
+    requesterRef: job.requester_ref,
+    productRef: job.product_ref,
+    rfqSearchId: job.rfq_search_id,
+    lineRef: job.line_ref,
+  };
 }
 
 function deferUntil(resetsAt: Date | null): Date {
@@ -865,6 +940,7 @@ async function finishJob(tx: Tx, jobId: string): Promise<void> {
     type: 'discovery.job.finished',
     subjectType: 'discovery_job',
     subjectId: finished.id,
-    payload: { jobId: finished.id, status: finished.status, counts: finished.counts },
+    payload: { jobId: finished.id, status: finished.status, counts: finished.counts, ...portalRefs(finished) },
   });
+  if (finished.rfq_search_id) await finishRfqSearch(tx, finished.rfq_search_id);
 }
