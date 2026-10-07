@@ -435,6 +435,36 @@ item (moving on to the next only if it would take that item below zero), so the
 amounts always sum to exactly `discountAmount`. `no_eligible_items`: the code
 has a product list and nothing in the cart is on it.
 
+### `POST /v1/promocodes/describe` — tenant JWT
+
+What each code is, for a buyer's list of saved codes. Up to 20 codes:
+
+```json
+{ "codes": ["WELCOME5", "NOPE"], "buyerRef": "cust-1" }
+```
+
+→ `200 { "codes": [ … ] }`, one entry per code in the order sent, `code` as sent:
+
+```json
+{ "code": "WELCOME5", "found": true, "status": "live",
+  "kind": "percent", "percentBps": 1000, "amount": null, "currency": "SAR",
+  "maxDiscount": 20000, "minSubtotal": 50000, "skus": [],
+  "startsAt": "…", "endsAt": null, "usesLeftForBuyer": 1 }
+{ "code": "NOPE", "found": false }
+```
+
+`status` is the same `availability` word the operator view shows, first true
+one wins: `paused` or `ended` (set on the code), `scheduled` (`startsAt` not
+reached), `expired` (`endsAt` passed), `exhausted` (`maxUses` reached or
+`maxSpend` used up), `live`. `live` does not promise a cart validates. `percentBps` is set for a percent code
+and `amount` (minor units) for a fixed one; the other is `null`. `skus` is the
+product list, `[]` for every product. `usesLeftForBuyer` is this `buyerRef`'s
+remaining uses under `perBuyerMaxUses` (reserved and settled count), `null`
+without that limit. Optional `at` is as on validate.
+
+Writes nothing. It does not evaluate a code's own `rules` and takes no cart, so
+validate is still the answer to whether a code works on a cart and for how much.
+
 ### `POST /v1/redemptions` — tenant JWT, **`Idempotency-Key` required**
 
 The validate body plus `orderRef` and optional `ttlMinutes`. Locks the code and
