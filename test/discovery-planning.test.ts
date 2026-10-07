@@ -370,84 +370,72 @@ describe('planning', () => {
   });
 });
 
-describe('an unclear product', () => {
+describe('identifying before searching', () => {
   const UNSURE = {
     ...IDENTIFIED,
-    name: 'Cement',
-    brand: 'Fundo',
+    name: 'Fondu Cement (High Alumina Cement)',
+    brand: null,
     model: null,
+    aliases: ['ciment fondu', 'high alumina cement'],
     confidence: 'unsure',
     alternatives: [
-      { name: 'Ciment Fondu (calcium aluminate cement)', nameAr: 'أسمنت الألومينا', description: 'A refractory, rapid-hardening cement.' },
-      { name: 'Portland cement, brand Fundo', nameAr: 'أسمنت بورتلاندي', description: 'Ordinary cement under an unknown brand.' },
+      { name: 'Fondu Cement (High Alumina Cement)', nameAr: 'أسمنت فوندو', description: 'Calcium aluminate cement.' },
+      { name: 'Fundo-brand Portland Cement', nameAr: 'أسمنت بورتلاند', description: 'Ordinary cement under an unknown brand.' },
     ],
   };
-  const FONDU = { ...IDENTIFIED, name: 'Ciment Fondu (calcium aluminate cement)', aliases: ['ciment fondu', 'calcium aluminate cement'], confidence: 'certain', alternatives: [] };
+  const SURE = { ...IDENTIFIED, confidence: 'certain', alternatives: [] };
 
-  it('waits for the operator before searching anything, then carries on with what they said', async () => {
-    answer = (task, n) => {
-      if (task === 'identify') return { status: 200, body: { output: n === 1 ? UNSURE : FONDU, durationMs: 1, costUsd: 0 } };
-      return defaultAnswer(task);
-    };
-    const created = await createJob({ product: 'Fundo Cement', side: 'suppliers' });
-    await drive();
-
-    const waiting = await call<{ job: Record<string, unknown> }>('GET', `/internal/discovery/jobs/${created.body.job.id}`);
-    expect(waiting.body.job).toMatchObject({
-      status: 'needs_input',
-      live: false,
-      needsInput: {
+  it('says what the product is, and asks "did you mean" only when Claude is unsure; nothing is stored', async () => {
+    answer = () => ({ status: 200, body: { output: UNSURE, durationMs: 1, costUsd: 0 } });
+    const unsure = await call<Record<string, unknown>>('POST', '/internal/discovery/identify', { product: 'Fundo Cement' });
+    expect(unsure.status).toBe(200);
+    expect(unsure.body).toMatchObject({
+      identified: { name: 'Fondu Cement (High Alumina Cement)', confidence: 'unsure' },
+      didYouMean: {
         asked: 'Fundo Cement',
-        question: 'Not sure what "Fundo Cement" is. Which product do you mean?',
-        alternatives: [{ name: 'Ciment Fondu (calcium aluminate cement)' }, { name: 'Portland cement, brand Fundo' }],
+        best: { name: 'Fondu Cement (High Alumina Cement)' },
+        // The best reading is not offered twice.
+        alternatives: [{ name: 'Fundo-brand Portland Cement' }],
       },
     });
-    // Nothing searched or planned past identification.
-    expect(calls.map((c) => c.task)).toEqual(['identify']);
-    expect(await db()`select id from discovery_tasks where job_id = ${created.body.job.id}`).toHaveLength(0);
-    expect(await db()`select id from discovery_personas where job_id = ${created.body.job.id}`).toHaveLength(0);
-    expect(await queued()).toHaveLength(0);
 
-    const clarified = await call<{ job: Record<string, unknown> }>('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, {
-      product: 'Ciment Fondu (calcium aluminate cement)',
-    });
-    expect(clarified.status).toBe(200);
-    expect(clarified.body.job).toMatchObject({ status: 'planning', clarification: 'Ciment Fondu (calcium aluminate cement)', needsInput: null });
-    await drive();
+    answer = () => ({ status: 200, body: { output: SURE, durationMs: 1, costUsd: 0 } });
+    const sure = await call<Record<string, unknown>>('POST', '/internal/discovery/identify', { product: 'Microsilica MS900D  1 MT', row: ROW });
+    expect(sure.body).toMatchObject({ identified: { name: IDENTIFIED.name }, didYouMean: null });
+    expect(JSON.parse(String(calls.at(-1)!.body['input']))).toMatchObject({ pastedRow: ROW });
 
-    const done = await jobRow(created.body.job.id);
-    expect(done).toMatchObject({ status: 'done', terms: FONDU.aliases });
-    expect(calls.map((c) => c.task)).toEqual(['identify', 'identify', 'personas']);
-    expect(JSON.parse(String(calls[1]!.body['input']))).toMatchObject({
+    expect((await call('POST', '/internal/discovery/identify', { product: 'x' })).status).toBe(400);
+    expect(await db()`select id from discovery_jobs`).toHaveLength(0);
+  });
+
+  it('starts a search from the accepted identification without asking again', async () => {
+    const created = await call<{ job: Record<string, unknown> }>('POST', '/internal/discovery/jobs', {
+      tenantId: TENANT_A,
+      countries: ['SA'],
       product: 'Fundo Cement',
-      operatorClarification: 'Ciment Fondu (calcium aluminate cement)',
+      side: 'suppliers',
+      identified: UNSURE,
     });
-
-    const types = (await db()<{ type: string }[]>`select type from events where type like 'discovery.job.%' order by id`).map((e) => e.type);
-    expect(types).toEqual([
-      'discovery.job.created',
-      'discovery.job.needs_input',
-      'discovery.job.clarified',
-      'discovery.job.planned',
-      'discovery.job.finished',
-    ]);
+    expect(created.status).toBe(201);
+    expect(created.body.job).toMatchObject({ productConfirmed: true, identified: { name: UNSURE.name }, terms: UNSURE.aliases });
+    await drive();
+    expect(calls.map((c) => c.task)).toEqual(['personas']);
+    expect((await jobRow(String(created.body.job['id'])))['status']).toBe('done');
   });
 
-  it('does not ask twice: once clarified, an unsure answer is searched as the operator said', async () => {
+  it('searches a picked "did you mean" as confirmed, and never stops for an unsure answer', async () => {
     answer = (task) => (task === 'identify' ? { status: 200, body: { output: UNSURE, durationMs: 1, costUsd: 0 } } : defaultAnswer(task));
-    const created = await createJob({ product: 'Fundo Cement', side: 'suppliers' });
+    const picked = await createJob({ product: 'Fundo-brand Portland Cement', side: 'suppliers', confirmed: true });
     await drive();
-    await call('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, { product: 'Fundo Cement' });
-    await drive();
-    expect((await jobRow(created.body.job.id))['status']).toBe('done');
-  });
+    expect(JSON.parse(String(calls[0]!.body['input']))).toMatchObject({ product: 'Fundo-brand Portland Cement', confirmed: true });
+    expect(await jobRow(picked.body.job.id)).toMatchObject({ status: 'done', product_confirmed: true });
 
-  it('refuses to clarify a job that is not waiting, an unknown job, and a bad body', async () => {
-    const created = await createJob({ product: 'Microsilica', side: 'suppliers' });
-    expect((await call('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, { product: 'x' })).status).toBe(400);
-    const busy = await call('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, { product: 'Microsilica' });
-    expect(busy).toMatchObject({ status: 409, body: { error: 'not_waiting' } });
-    expect((await call('POST', '/internal/discovery/jobs/44444444-4444-4444-4444-444444444444/clarify', { product: 'Microsilica' })).status).toBe(404);
+    // Created without the "did you mean" step at all: still never waits.
+    calls = [];
+    const direct = await createJob({ product: 'Fundo Cement', side: 'suppliers' });
+    await drive();
+    expect(calls.map((c) => c.task)).toEqual(['identify', 'personas']);
+    expect((await jobRow(direct.body.job.id))['status']).toBe('done');
   });
 });
 
@@ -469,5 +457,8 @@ describe('without the bridge', () => {
     expect(suppliers.body.tasks).toHaveLength(1);
     expect(await queued('discovery.plan')).toHaveLength(0);
     expect(calls).toHaveLength(0);
+
+    const identify = await call('POST', '/internal/discovery/identify', { product: 'Microsilica' });
+    expect(identify).toMatchObject({ status: 200, body: { identified: null, didYouMean: null } });
   });
 });

@@ -25,7 +25,7 @@ export const identifyPrompt = {
     'Aliases are short search phrases (1 to 4 words), most common first, at most 8.',
     'If you cannot tell what the product is, set notIdentified to true and leave the rest as empty as allowed.',
     'confidence: "certain" when the product is clear; "likely" when there is one clear reading despite noise such as pack sizes or codes; "unsure" when the name could be a misspelling, the brand or model is not one you know, or the words could mean more than one distinct product. When unsure, do not pick one: list in alternatives the distinct products it could be (most likely first, at most 4, each with an Arabic name and one sentence), and still fill the other fields for the most likely one.',
-    'If the input has an operatorClarification, the operator has said what the product is: identify that, with confidence "certain" or "likely", and no alternatives.',
+    'If the input has confirmed: true, the operator has confirmed this is the product they mean: identify it as written, with confidence "certain" or "likely", and no alternatives.',
     DATA_ONLY,
   ].join('\n'),
   schema: {

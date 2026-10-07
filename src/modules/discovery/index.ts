@@ -10,6 +10,7 @@ import { activeFinder, type Candidate, type FinderQuery } from './finder/index.j
 export * from './finder/index.js';
 export * from './jobs.js';
 export { readRow, type RowReading } from './rows.js';
+export { Identified } from './prompts.js';
 export { pruneSearchCache } from './search/cache.js';
 export { setSerperFetch } from './search/serper.js';
 export { DiscoveryError } from './errors.js';

@@ -5,8 +5,9 @@ import {
   MAX_COUNTRIES,
   MAX_RESULT_LIMIT,
   MAX_SOURCE_ROW,
-  clarifyJob,
+  Identified,
   createJob,
+  identifyProduct,
   readRow,
 } from '../../../modules/discovery/index.js';
 import { listQuery, page } from './shared.js';
@@ -37,6 +38,10 @@ const createBody = z.object({
   resultLimit: z.number().int().min(1).max(MAX_RESULT_LIMIT).optional(),
   side: z.enum(['suppliers', 'buyers']).default('suppliers'),
   row: z.string().max(MAX_SOURCE_ROW).optional(),
+  /** The identification accepted from POST /internal/discovery/identify. */
+  identified: Identified.optional(),
+  /** The operator confirmed `product` (picked a "did you mean", or chose "as typed"). */
+  confirmed: z.boolean().optional(),
 });
 
 discoveryOperator.post('/internal/discovery/jobs', async (c) => {
@@ -73,7 +78,7 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
     .extend({
       cursor: z.string().uuid().optional(),
       tenantId: z.string().uuid().optional(),
-      status: z.enum(['planning', 'needs_input', 'running', 'done', 'failed']).optional(),
+      status: z.enum(['planning', 'running', 'done', 'failed']).optional(),
     })
     .safeParse(c.req.query());
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
@@ -96,20 +101,34 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
   return c.json(page(rows, q.data.limit));
 });
 
-/** The operator says what the product is, for a job that asked. */
-discoveryOperator.post('/internal/discovery/jobs/:id/clarify', async (c) => {
-  const id = z.string().uuid().safeParse(c.req.param('id'));
-  if (!id.success) return c.json({ error: 'not found' }, 404);
+/**
+ * What the product is, before a search is created: the "did you mean" step.
+ * Nothing is stored. `identified` is null when the Claude bridge is not
+ * configured, and the search goes ahead with the product as typed.
+ */
+discoveryOperator.post('/internal/discovery/identify', async (c) => {
   const parsed = z
-    .object({ product: z.string().trim().min(2).max(200) })
+    .object({
+      product: z.string().trim().min(2).max(200),
+      category: z.string().trim().max(200).optional(),
+      row: z.string().max(MAX_SOURCE_ROW).optional(),
+    })
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+  const identified = await identifyProduct(parsed.data);
 
-  const [job] = await db()<{ tenant_id: string }[]>`select tenant_id::text from discovery_jobs where id = ${id.data}`;
-  if (!job) return c.json({ error: 'not found' }, 404);
-
-  await withTenant(job.tenant_id, (tx) => clarifyJob(tx, { jobId: id.data, product: parsed.data.product }));
-  return c.json((await oneJob(id.data))!);
+  // The engine decides whether to ask: only when Claude was unsure and has
+  // other readings to offer. Otherwise the search starts with `identified`.
+  const didYouMean =
+    identified && identified.confidence === 'unsure' && identified.alternatives.length > 0
+      ? {
+          question: `Did you mean one of these? "${parsed.data.product}" is not a product we can be sure of.`,
+          asked: parsed.data.product,
+          best: { name: identified.name, nameAr: identified.nameAr, description: identified.description },
+          alternatives: identified.alternatives.filter((a) => a.name !== identified.name),
+        }
+      : null;
+  return c.json({ identified, didYouMean });
 });
 
 discoveryOperator.get('/internal/discovery/jobs/:id', async (c) => {
@@ -367,7 +386,8 @@ async function oneJob(id: string) {
   const [row] = await sql<(Record<string, unknown> & { deferredUntil: Date | null })[]>`
     select j.id::text as id, j.tenant_id::text as "tenantId", t.name as "tenantName",
            j.product, j.category, j.side, j.countries, j.terms,
-           j.result_limit as "resultLimit", j.status, j.counts, j.identified, j.error, j.clarification,
+           j.result_limit as "resultLimit", j.status, j.counts, j.identified, j.error,
+           j.product_confirmed as "productConfirmed",
            j.source_row as "sourceRow", j.attempts, j.deferrals,
            j.deferred_until as "deferredUntil",
            j.created_at as "createdAt", j.started_at as "startedAt", j.finished_at as "finishedAt"
@@ -395,23 +415,11 @@ async function oneJob(id: string) {
     order by array_position(${job['countries'] as string[]}::text[], country), created_at
   `;
 
-  // What to ask when Claude could not tell what the product is.
-  const identified = job['identified'] as { alternatives?: { name: string; nameAr: string; description: string }[] } | null;
-  const needsInput =
-    job['status'] === 'needs_input'
-      ? {
-          question: `Not sure what "${String(job['product'])}" is. Which product do you mean?`,
-          asked: job['product'],
-          alternatives: identified?.alternatives ?? [],
-        }
-      : null;
-
   return {
     job: {
       ...job,
       waiting: waiting(deferredUntil),
       live: job['status'] === 'planning' || job['status'] === 'running',
-      needsInput,
     },
     personas,
     tasks: tasks.map(({ deferredUntil: until, ...task }) => ({ ...task, waiting: waiting(until) })),
