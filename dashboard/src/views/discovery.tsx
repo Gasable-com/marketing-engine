@@ -26,7 +26,7 @@ import {
   useAsync,
 } from '../ui/index.js';
 
-const STATUSES = ['planning', 'running', 'done', 'failed'];
+const STATUSES = ['planning', 'needs_input', 'running', 'done', 'failed'];
 
 /** How often a running job's page asks again. */
 const LIVE_MS = 3000;
@@ -319,6 +319,69 @@ export function NewDiscoveryView() {
   );
 }
 
+/**
+ * Claude could not tell what the product is: the engine's question, its
+ * alternatives as buttons, and a box for the operator's own words.
+ */
+function AskProduct({
+  jobId,
+  ask,
+  onClarified,
+}: {
+  jobId: string;
+  ask: NonNullable<DiscoveryJobDetail['job']['needsInput']>;
+  onClarified: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  const choose = async (product: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.clarifyDiscoveryJob(jobId, product);
+      onClarified();
+    } catch (err) {
+      setError(err);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="which product?" wide>
+      <div class="form">
+        <p>{ask.question}</p>
+        <p class="muted">Nothing has been searched yet. Pick one, or say what it is.</p>
+        {ask.alternatives.map((a) => (
+          <div key={a.name} class="actions">
+            <button class="primary" disabled={busy} onClick={() => choose(a.name)}>
+              {a.name}
+            </button>
+            <span>
+              {a.nameAr ? <span class="muted">{a.nameAr} · </span> : null}
+              {a.description}
+            </span>
+          </div>
+        ))}
+        <label>
+          something else
+          <input value={typed} placeholder="the product's name" onInput={(e) => setTyped((e.target as HTMLInputElement).value)} />
+        </label>
+        <div class="actions">
+          <button disabled={busy || typed.trim().length < 2} onClick={() => choose(typed)}>
+            Search for this
+          </button>
+          <button disabled={busy} onClick={() => choose(ask.asked)}>
+            Search “{ask.asked}” as typed
+          </button>
+        </div>
+        {error ? <WriteFailed error={error} /> : null}
+      </div>
+    </Card>
+  );
+}
+
 /** The engine's reading of the row: every cell, with the ones it picked marked. */
 function Reading({ reading }: { reading: RowReading }) {
   const label = (i: number) =>
@@ -367,7 +430,7 @@ export function DiscoveryJobView({
 }) {
   // Asked again every few seconds while the job runs, then left alone.
   const [live, setLive] = useState(true);
-  const { state, loadedAt } = useAsync(() => api.discoveryJob(id), [id], live ? LIVE_MS : undefined);
+  const { state, loadedAt, refresh } = useAsync(() => api.discoveryJob(id), [id], live ? LIVE_MS : undefined);
 
   // The engine says whether the job can still change.
   const engineLive = state.status === 'ok' ? state.data.job.live : null;
@@ -378,7 +441,18 @@ export function DiscoveryJobView({
   if (state.status === 'loading') return <Loading what="the search" />;
   if (state.status === 'error') return <Failed error={state.error} what="the search" />;
 
-  return <DiscoveryJob detail={state.data} loadedAt={loadedAt} country={country} onCountry={onCountry} />;
+  return (
+    <DiscoveryJob
+      detail={state.data}
+      loadedAt={loadedAt}
+      country={country}
+      onCountry={onCountry}
+      onClarified={() => {
+        setLive(true);
+        refresh();
+      }}
+    />
+  );
 }
 
 export function DiscoveryJob({
@@ -386,11 +460,13 @@ export function DiscoveryJob({
   loadedAt,
   country,
   onCountry,
+  onClarified = () => {},
 }: {
   detail: DiscoveryJobDetail;
   loadedAt: Date | null;
   country: string;
   onCountry: (country: string) => void;
+  onClarified?: () => void;
 }) {
   const { job, tasks, personas } = detail;
 
@@ -410,6 +486,12 @@ export function DiscoveryJob({
         </div>
       ) : null}
       {job.error ? <div class="banner critical">{job.error}</div> : null}
+      {job.needsInput ? <AskProduct jobId={job.id} ask={job.needsInput} onClarified={onClarified} /> : null}
+      {job.clarification ? (
+        <div class="muted" style="margin-bottom:8px">
+          searching for “{job.clarification}”, as clarified (asked: “{job.product}”)
+        </div>
+      ) : null}
 
       <div class="cards">
         <Card title="search">

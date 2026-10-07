@@ -1104,9 +1104,24 @@ is `header` when the columns were picked by name and `guess` otherwise; or
 `400 { "error": "no_product" }` when no cell reads as a name. Nothing is
 stored.
 
+#### `POST /internal/discovery/jobs/:id/clarify`
+
+```json
+{ "product": "Ciment Fondu (calcium aluminate cement)" }
+```
+
+When Claude is not sure what the product is (a likely misspelling, a brand it
+does not know, or words that could mean more than one product), the job stops
+after identification, before anything is searched, with status `needs_input`.
+This route says what the product is: one of the job's `needsInput.alternatives`,
+the operator's own words, or the original as typed. The job plans again from
+identification with those words and is not asked again. `200` with the job as
+`GET` returns it; `409 not_waiting` unless the job is `needs_input`; `400` for a
+product outside 2–200 characters; `404` for an unknown job.
+
 #### `GET /internal/discovery/jobs?tenantId=&status=`
 
-Newest first. `status` is `planning`, `running`, `done` or `failed`. Each row:
+Newest first. `status` is `planning`, `needs_input`, `running`, `done` or `failed`. Each row:
 `id`, `tenantId`, `tenantName`, `product`, `category`, `side`,
 `identifiedName`, `countries`, `status`, `counts`, `createdAt`, `finishedAt`.
 
@@ -1124,8 +1139,11 @@ Newest first. `status` is `planning`, `running`, `done` or `failed`. Each row:
 
 The job also carries `identified` (Claude's identification: `name`, `nameAr`,
 `brand`, `model`, `category`, `aliases`, `description`, `uses`, or `null`),
-`error`, `sourceRow`, `attempts`, `deferrals`, `startedAt`, `waiting` and
-`live`; the response has `personas` (in order: `id`, `position`, `name`,
+`error`, `sourceRow`, `attempts`, `deferrals`, `startedAt`, `waiting`, `live`,
+`clarification` (what the operator said the product is) and `needsInput`:
+`{ question, asked, alternatives: [{ name, nameAr, description }] }` while the
+job waits for the operator, else `null`. `identified` also carries
+`confidence` (`certain`, `likely` or `unsure`) and `alternatives`; the response has `personas` (in order: `id`, `position`, `name`,
 `description`, `roles`, `sectors`, `searchTerms`, `placesTerms`, `signals`);
 each task carries `deferrals` and `waiting`. `waiting` is
 `{ "reason": "usage_limit", "until": "…" }` while a Claude usage limit holds the
@@ -1290,6 +1308,8 @@ one reason.
 | `discovery.job.finished` | `jobId`, `status`, `counts`, and `error` for a job that failed in planning |
 | `discovery.job.planned` | `jobId`, `product` (the identified name), `personas` (names) |
 | `discovery.job.deferred` | `jobId`, `resetsAt` |
+| `discovery.job.needs_input` | `jobId`, `asked`, `alternatives` (names) |
+| `discovery.job.clarified` | `jobId`, `asked`, `product` |
 | `discovery.task.deferred` | `jobId`, `taskId`, `country`, `resetsAt` |
 
 All of them have `subjectType: "discovery_job"` and the job's id as `subjectId`,
@@ -1333,6 +1353,7 @@ here was later rolled back.
 `message.replied` · `message.fallback` · `company.created` · `company.updated` ·
 `company.merged` · `company.profiled` · `discovery.searched` ·
 `discovery.job.created` · `discovery.job.planned` · `discovery.job.deferred` ·
+`discovery.job.needs_input` · `discovery.job.clarified` ·
 `discovery.task.finished` · `discovery.task.failed` · `discovery.task.deferred` ·
 `discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·

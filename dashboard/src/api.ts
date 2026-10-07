@@ -420,6 +420,13 @@ export type DiscoveryJobDetail = {
     waiting: Waiting;
     /** True while the job is planning or running: worth asking again. */
     live: boolean;
+    /** Set when Claude could not tell what the product is and the job waits for the operator. */
+    needsInput?: {
+      question: string;
+      asked: string;
+      alternatives: { name: string; nameAr: string; description: string }[];
+    } | null;
+    clarification?: string | null;
   };
   personas: DiscoveryPersona[];
   tasks: DiscoveryTask[];
@@ -539,6 +546,8 @@ export const api = {
   discoveryResultsCsvUrl: (id: string, params: Params) => `${BASE}/discovery/jobs/${id}/results.csv${toQuery(params)}`,
   createDiscoveryJob: (body: NewDiscoveryJob) => send<DiscoveryJobDetail>('/discovery/jobs', body),
   readRow: (row: string) => send<RowReading>('/discovery/read-row', { row }),
+  clarifyDiscoveryJob: (id: string, product: string) =>
+    send<DiscoveryJobDetail>(`/discovery/jobs/${id}/clarify`, { product }),
 
   /** The stream is an EventSource, not a fetch; this is just where its URL lives. */
   streamUrl: (params: Params) => `${BASE}/stream${toQuery(params)}`,

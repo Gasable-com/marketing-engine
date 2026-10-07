@@ -44,6 +44,7 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         discoveryResultsCsvUrl: (id: string) => `/api/discovery/jobs/${id}/results.csv`,
         createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         readRow: () => ok(fixtures.rowReading),
+        clarifyDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         streamUrl: () => '/api/stream',
         ...overrides,
       },
@@ -181,6 +182,30 @@ describe('discovery', () => {
     expect(html).toContain('finder exploded');
     expect(html).toContain('rank');
     expect(html).toContain('results');
+  });
+
+  it('asks which product was meant when the engine says so', async () => {
+    mockApi();
+    const { DiscoveryJob } = await import('../src/views/discovery.js');
+    const detail = {
+      ...fixtures.discoveryJobDetail,
+      job: {
+        ...fixtures.discoveryJobDetail.job,
+        status: 'needs_input',
+        needsInput: {
+          question: 'Not sure what "Fundo Cement" is. Which product do you mean?',
+          asked: 'Fundo Cement',
+          alternatives: [
+            { name: 'Ciment Fondu (calcium aluminate cement)', nameAr: 'أسمنت الألومينا', description: 'A refractory cement.' },
+            { name: 'Portland cement', nameAr: 'أسمنت بورتلاندي', description: 'Ordinary cement.' },
+          ],
+        },
+      },
+    };
+    const html = render(<DiscoveryJob detail={detail} loadedAt={null} country="" onCountry={() => {}} />);
+    expect(html).toContain('Which product do you mean?');
+    expect(html).toContain('Ciment Fondu (calcium aluminate cement)');
+    expect(html).toContain('as typed');
   });
 
   it('loads a job by id', async () => {
