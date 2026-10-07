@@ -41,6 +41,7 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         discoveryJob: () => ok(fixtures.discoveryJobDetail),
         discoveryResults: () => ok({ items: fixtures.discoveryResults, nextCursor: null }),
         discoveryCandidates: () => ok({ items: [], nextCursor: null }),
+        discoveryResultsCsvUrl: (id: string) => `/api/discovery/jobs/${id}/results.csv`,
         createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         readRow: () => ok(fixtures.rowReading),
         streamUrl: () => '/api/stream',
@@ -162,7 +163,7 @@ describe('discovery', () => {
     expect(html).toContain('Read row');
     expect(html).toContain('Find buyers');
     expect(html).toContain('textarea');
-    expect(html).toContain('ranks only the companies already in the pool');
+    expect(html).toContain('only ranks companies already in the pool');
   });
 
   it("renders a job with its tasks, a task's error and the ranked results", async () => {
@@ -175,6 +176,8 @@ describe('discovery', () => {
     expect(html).toContain('Ready-mix concrete plants');
     expect(html).toContain('who would buy it');
     expect(html).toContain('Waiting for the Claude usage limit');
+    expect(html).toContain('Download CSV');
+    expect(html).toContain('results.csv');
     expect(html).toContain('finder exploded');
     expect(html).toContain('rank');
     expect(html).toContain('results');

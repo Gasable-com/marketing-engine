@@ -128,8 +128,10 @@ export const triagePrompt = {
   system: [
     'You sort web and Google Maps search results for a B2B company search in Saudi Arabia and the Gulf.',
     'You are given the product, the side of the search (suppliers that sell it, or buyers that would use it), the personas being searched for, and candidates: each a website or Maps listing with its name, search snippets, address, Maps category, and sometimes what is already known about the company.',
-    'You are also given the country being searched (ISO code). Companies must operate in that country: drop a company that clearly operates only elsewhere (another country\'s domain, address or wording), and keep one whose country is unclear.',
-    'For every candidate decide from that alone (you cannot open pages): keep it if it is most likely one real company matching one or more personas; drop it if it is a directory, marketplace, news article, blog, job board, government page, a company of another kind, a company on the wrong side, or one that operates only in another country.',
+    'You are also given the country being searched (ISO code). Keep only companies that operate in that country: a local address or city, a local phone number, the country\'s domain (e.g. .sa), or a local branch. Drop a company whose snippets place it elsewhere (another country\'s domain, address, phone or wording) unless they show a branch in the country. When nothing points either way, keep it with fit "weak".',
+    'Keep only private businesses. Drop universities, schools, government ministries, agencies and municipalities, military and public hospitals, a facility that belongs to one of those (e.g. a university\'s own plant), mosques, charities and individuals.',
+    'For every candidate decide from that alone (you cannot open pages): keep it if it is most likely one real company matching one or more personas; drop it if it is a directory, marketplace, news article, blog, job board, a non-business as above, a company of another kind, a company on the wrong side, or one that operates only in another country.',
+    'Fit "strong" only when the snippets show the persona\'s specific link to this product (e.g. a pool maintenance company for pool chlorine); a company that merely belongs to a broad sector is "weak".',
     'For a kept candidate give fit "strong" when the snippets clearly show the persona, "weak" when it is plausible but unclear, and the ids of the personas it fits. For a dropped one, fit is null and personaIds is empty.',
     'Give a short reason (under 15 words), e.g. "directory listing", "news article", "sells cars, not admixtures", "ready-mix plant in Riyadh".',
     'Return exactly one verdict per candidate id given, no more and no fewer.',
@@ -171,3 +173,89 @@ export const Triage = z.object({
   ),
 });
 export type Verdict = z.infer<typeof Triage>['verdicts'][number];
+
+// ---------------------------------------------------------------------------
+// extract
+// ---------------------------------------------------------------------------
+
+export const MIN_QUOTE = 12;
+/** A quote is a sentence or two, never a page. */
+export const MAX_QUOTE = 300;
+
+const quoted = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { value: { type: 'string' }, quote: { type: 'string', maxLength: 300 }, url: { type: 'string' } },
+  required: ['value', 'quote', 'url'],
+};
+
+export const extractPrompt = {
+  system: [
+    'You read one company\'s web pages (or, when it has no website, its Google Maps listing) for a B2B company search in Saudi Arabia and the Gulf.',
+    'You are given the product, the side of the search (suppliers that sell it, or buyers that would use it), the personas being searched for (each signal numbered from 0), the country, the Maps listing if any, and the pages: each with its url and text.',
+    'Say whether this is one real private company (not a directory, marketplace, news site, job board, university, school, government body, public facility, mosque, charity or individual), which persona it fits best and how well (strong, weak, or none), and extract its name (and Arabic name when the pages give one), the products or services it offers, its supply-chain roles and its cities.',
+    'EVERY fact must carry a quote copied exactly, character for character, from one page\'s text, at least ' + MIN_QUOTE + ' and at most ' + MAX_QUOTE + ' characters long, and the url of that page exactly as given. For a Maps-only company the url is the listing\'s url and quotes come from the listing. Never paraphrase a quote, never invent one, never cite a url you were not given. A fact you cannot quote, leave out.',
+    'Evidence: up to 6 items, each a short claim showing the persona fits, with its quote, url, and the index of the persona signal it shows (or null).',
+    'Roles must be from: ' + PROFILE_ROLES.join(', ') + '.',
+    'It must operate in the country given: if the pages show it is based elsewhere with no branch there, set fit to "none" and say so in reason.',
+    'Fit "strong" only when the pages show this company\'s specific link to the product: for suppliers, that it sells this product or its close equivalents; for buyers, that its own operations use this kind of product (e.g. it maintains pools, runs water or wastewater treatment, cleans with chlorine). A company that only belongs to a broad sector, with no such link on its pages, is "weak".',
+    'reason: one short line on why the company fits, or why it is not saved (e.g. "a directory, not a company").',
+    DATA_ONLY,
+  ].join('\n'),
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      isCompany: { type: 'boolean' },
+      name: { anyOf: [quoted, { type: 'null' }] },
+      nameAr: { anyOf: [quoted, { type: 'null' }] },
+      personaId: { type: ['string', 'null'] },
+      fit: { type: 'string', enum: ['strong', 'weak', 'none'] },
+      evidence: {
+        type: 'array',
+        maxItems: 6,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            signal: { type: ['integer', 'null'] },
+            claim: { type: 'string' },
+            quote: { type: 'string', maxLength: 300 },
+            url: { type: 'string' },
+          },
+          required: ['signal', 'claim', 'quote', 'url'],
+        },
+      },
+      products: { type: 'array', maxItems: 12, items: quoted },
+      roles: { type: 'array', items: { type: 'string', enum: [...PROFILE_ROLES] }, maxItems: 4 },
+      cities: { type: 'array', maxItems: 8, items: quoted },
+      reason: { type: 'string' },
+    },
+    required: ['isCompany', 'name', 'nameAr', 'personaId', 'fit', 'evidence', 'products', 'roles', 'cities', 'reason'],
+  },
+};
+
+const Quoted = z.object({ value: z.string().trim().min(1).max(300), quote: z.string(), url: z.string() });
+
+export const Extraction = z.object({
+  isCompany: z.boolean(),
+  name: Quoted.nullable(),
+  nameAr: Quoted.nullable(),
+  personaId: z.string().nullable(),
+  fit: z.enum(['strong', 'weak', 'none']),
+  evidence: z
+    .array(
+      z.object({
+        signal: z.number().int().nullable(),
+        claim: z.string().trim().min(1).max(300),
+        quote: z.string(),
+        url: z.string(),
+      }),
+    )
+    .max(6),
+  products: z.array(Quoted).max(12),
+  roles: z.array(z.string()).max(4),
+  cities: z.array(Quoted).max(8),
+  reason: z.string(),
+});
+export type Extraction = z.infer<typeof Extraction>;

@@ -214,6 +214,18 @@ input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-
   outline-offset: 1px;
 }
 button { cursor: pointer; }
+/* A download link that looks like the buttons around it. */
+a.button {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+  text-decoration: none;
+  display: inline-block;
+}
+a.button:hover { background: var(--raised); }
 button:hover { background: var(--raised); }
 button.primary { border-color: var(--series-1); color: var(--series-1); }
 button[disabled] { opacity: 0.5; cursor: default; }

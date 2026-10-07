@@ -75,6 +75,13 @@ export type UpsertInput = {
   tenantView?: TenantView | undefined;
   /** Ask the registrar about the CR before storing, when lookup is configured. */
   enrich?: boolean | undefined;
+  /**
+   * Whether a similar name may link this record to an existing company when
+   * no strong identifier matches (default true). Web discovery says false: a
+   * page can carry any name, so only a domain, Maps id, CR or VAT joins it to
+   * a company already in the pool.
+   */
+  linkByName?: boolean | undefined;
 };
 
 export type UpsertResult = {
@@ -175,7 +182,8 @@ export async function upsert(
     company = merged.survivor;
     mergedFrom = merged.losers;
   } else {
-    const linked = await fuzzyMatch(tx, nameNormalized, input.country ?? null);
+    const linked =
+      input.linkByName === false ? undefined : await fuzzyMatch(tx, nameNormalized, input.country ?? null);
     if (linked) {
       company = linked;
     } else {

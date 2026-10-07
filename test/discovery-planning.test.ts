@@ -159,6 +159,14 @@ beforeEach(async () => {
 
 describe('planning', () => {
   it('identifies the product and its buyer personas, then queues one task per country', async () => {
+    // A seller of the product, already in the pool: never a buyer of it.
+    const { company: seller } = await withTenant(TENANT_A, (tx) =>
+      upsert(tx, { name: 'Silica Sellers', country: 'SA', identifiers: [], source: { type: 'api', tenantId: TENANT_A } }),
+    );
+    await withTenant(TENANT_A, (tx) =>
+      setProfile(tx, { tenantId: TENANT_A, companyId: seller.id, products: ['Microsilica', 'Silica fume'] }),
+    );
+
     const created = await createJob({ product: 'Microsilica MS900D  1 MT', side: 'buyers', row: ROW });
     expect(created.status).toBe(201);
     expect(created.body.job).toMatchObject({ status: 'planning', side: 'buyers', sourceRow: ROW, live: true });
@@ -188,13 +196,14 @@ describe('planning', () => {
     expect(detail.body.personas[0]!.searchTerms).toEqual(['ready mix concrete company', 'مصنع خرسانة جاهزة']);
     expect(detail.body.personas[0]!.placesTerms).toEqual(['ready mix concrete']);
 
-    // Until reading arrives a buyers task ranks nothing, rather than listing sellers.
+    // A buyers task ranks kinds of company (the personas' Maps keywords), never
+    // the product's own names, so the seller is not listed as a buyer.
     expect(detail.body.tasks).toEqual([
       expect.objectContaining({
         country: 'SA',
         status: 'done',
-        // No Serper key here, so search and triage are skipped too.
-        counts: { skipped_rank_buyers: 1, skipped_search: 1, skipped_triage: 1 },
+        // No Serper key here, so search and triage are skipped.
+        counts: { ranked: 0, skipped_search: 1, skipped_triage: 1 },
       }),
     ]);
     expect(await db()`select id from discovery_results`).toHaveLength(0);

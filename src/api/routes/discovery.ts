@@ -42,7 +42,16 @@ const profileBody = z.object({
     .optional(),
   quality: z.enum(['full', 'thin']).optional(),
   // An ISO timestamp only: coercing null or a number would store 1970.
-  profiledAt: z.string().datetime({ offset: true }).pipe(z.coerce.date()).optional(),
+  profiledAt: z
+    .string()
+    .datetime({ offset: true })
+    .pipe(
+      z.coerce
+        .date()
+        // A future stamp would keep discovery from ever reading the company again.
+        .refine((d) => d.getTime() <= Date.now() + 60_000, 'profiledAt cannot be in the future'),
+    )
+    .optional(),
 });
 
 const inviteBody = z.object({

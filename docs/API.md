@@ -264,8 +264,9 @@ company is private to it.
 A domain is stored as its registrable domain (`https://www.shop.example.com.sa/x`
 → `example.com.sa`, and `com`, `net`, `org`, `gov`, `edu`, `ac`, `co`, `sch` or
 `med` under any two-letter country code is a suffix too); one on a shared host such as `salla.sa`, `instagram.com`
-or `business.site` is rejected as `shared host` and kept only in the source's
-`data`. An email also yields its domain, unless that is a free-mail provider or
+or `business.site`, or on a site builder or link page such as `site123.me`,
+`weebly.com`, `godaddysites.com` or `bio.link`, is rejected as `shared host` and
+kept only in the source's `data`. An email also yields its domain, unless that is a free-mail provider or
 a shared host. `gmaps` is a Google Maps place id or cid exactly as given
 (`[A-Za-z0-9:_-]`, up to 200). `enrich: true` asks the registrar about a `cr`
 first, when a lookup is configured. Sources `web` and `maps` are written by
@@ -1101,7 +1102,9 @@ tasks yet: on the `discovery.plan` queue it identifies the product and lists
 3–6 personas for its side, then turns `running` and creates and queues one task
 per country. Without the bridge a suppliers job starts `running` with its tasks
 at once, and a buyers job is `400 buyers_need_planning`. Until steps 19–20 a
-buyers task ranks nothing (`skipped_rank_buyers: 1`).
+buyers task ranked nothing; from step 20 it ranks what was found, then pool
+companies matching the personas' Maps keywords (kinds of company), never the
+product's own names.
 
 `product` is 2–200 characters after trimming; `category` is an optional label
 of up to 200; `countries` are 1–10 ISO 3166-1 alpha-2 codes, upper-cased, each
@@ -1184,7 +1187,71 @@ Ranked best first (`rank` is 1.. within each country), paged with `limit` and
 ```
 
 `profile` is `null` for a company without one. `identifiers` are its
-`domain`, `email`, `gmaps` and `phone` values.
+`domain`, `email`, `gmaps` and `phone` values. Each row also has `tier`
+(`found`: this search found, read and saved it; `pool`: already in the pool and
+matched), `persona` (`id`, `name`, or `null`), `fit` (`strong`, `weak` or
+`null`) and `evidence`: quotes checked against the page they came from, each
+`{ claim, quote, url }`. Found rows always rank above pool rows.
+
+**How a task reads and ranks** (step 20). The `read_extract` stage takes the
+kept candidates in triage order, up to `DISCOVERY_MAX_READS` per task (default
+25), one at a time:
+- a company profiled from the web in the last 90 days is not read again; it is
+  ranked from its stored profile and its triage fit;
+- otherwise its home page and up to three product, about or contact pages on
+  its own registrable domain are read into memory, through the self-hosted
+  Firecrawl (`FIRECRAWL_URL`, its markdown turned into plain text) or a guarded plain fetch (every address checked
+  public, redirects followed by hand on the same domain only, 2 MB and 15 s
+  caps); a Maps-only company is judged from its listing;
+- Claude extracts the name, products, roles, cities, the persona it fits and
+  evidence, every fact with a quote; a quote that is not on the page its `url`
+  names (at least 12 characters, compared folded) is dropped;
+- phones, emails and WhatsApp numbers are taken from the text by pattern, never
+  from Claude; a CR found on a page is kept as `crClaimed` on the source and
+  becomes an identifier only when Wathq names the same company;
+- the company is saved through `registry.upsert` (source `web`, or `maps` when
+  no page of its site could be read; the job's tenant owns the source row;
+  never linked to an existing company by name alone), and its profile is
+  merged, never replaced: lists unioned, quality only ever raised, `profiledAt`
+  stamped only when web pages were read;
+- identity is claimed carefully: the domain only when its pages were read;
+  emails only on that domain; a Maps id only for a company with no website read
+  or whose listing carries the saved name (otherwise kept as `listingCid` on
+  the source); a CR only when Wathq gives exactly the same name;
+- a quote must be 12–300 characters once folded and appear on its page as
+  whole words.
+
+A candidate is "fresh" (not read again) when its company was profiled from the
+web in the last 90 days, before this job started.
+
+No page is stored: only checked quotes, in the source row's `data.quotes` and
+the result's `evidence`. A job makes at most `DISCOVERY_MAX_CLAUDE_CALLS`
+Claude calls (default 60) across planning, triage and extraction.
+
+Found companies score `0.6` (strong fit) or `0.3` (weak), plus `0.2` × the
+share of the persona's signals their evidence shows, plus the quality and
+freshness weights below. Pool companies come after them: for suppliers the
+`products` finder with the product's names, for buyers with the personas' Maps
+keywords.
+
+Counts from reading: `read`, `read_failed`, `read_skipped_fresh`,
+`reads_capped`, `firecrawl`, `fetch_fallback`, `extracted`, `quotes_checked`,
+`quotes_dropped`, `saved`, `not_saved`, `extract_failed`, `extract_capped`,
+`claude_calls`. Candidates are marked `extracted`, `not_saved` or `failed` as
+they are read, with a reason; the candidates route returns each one's checked
+`evidence`.
+
+#### `GET /internal/discovery/jobs/:id/results.csv?country=`
+
+The same results as a file to download: `text/csv; charset=utf-8` with a
+byte-order mark (so a spreadsheet reads Arabic correctly), `Content-Disposition:
+attachment` named after the product, side, country and date, at most 2 000
+rows. Columns: `rank, country, tier, score, company, company_id, persona, fit,
+domains, phones, emails, google_maps_ids, products, roles, cities,
+profile_quality, profiled_at, evidence, reasons`; lists are joined with `; `,
+evidence as `claim: "quote" (url)` joined with ` | `. A text cell from a web page
+that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is
+prefixed with `'`. `404` for an unknown job.
 
 #### `GET /internal/discovery/jobs/:id/candidates?country=&status=kept,new`
 

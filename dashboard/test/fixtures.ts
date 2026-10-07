@@ -467,6 +467,10 @@ export const discoveryResults: DiscoveryResult[] = [
     score: 0.7,
     reasons: ['product: ديزل ~ توريد الديزل', 'profile: full', 'profiled 5 days ago'],
     country: 'SA',
+    tier: 'found',
+    persona: { id: 'p1', name: 'Ready-mix concrete plants' },
+    fit: 'strong',
+    evidence: [{ claim: 'high-strength mixes', quote: 'high strength concrete with special mix designs', url: 'https://binareadymix.com/' }],
     company: { id: 'c1', name: 'Riyadh Diesel', country: 'SA' },
     profile: {
       products: ['توريد الديزل'],

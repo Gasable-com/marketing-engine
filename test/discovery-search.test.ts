@@ -166,6 +166,8 @@ beforeEach(async () => {
   serper.calls = [];
   serper.override = null;
   clearProviders();
+  // These tests stop at triage: reading is step 20's, tested on its own.
+  process.env.DISCOVERY_MAX_READS = '0';
   setProviders({ bridge: bridge.url(), serper: true });
   serper.install();
   plan(DIESEL, DIESEL_PERSONAS);
