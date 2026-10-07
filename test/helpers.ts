@@ -25,7 +25,8 @@ export async function resetDb(): Promise<void> {
              ledger_entries, redemptions, promocodes,
              webhook_deliveries, webhook_endpoints,
              campaign_recipients, campaign_runs, campaigns,
-             audience_members, audiences, contacts
+             audience_members, audiences, contacts,
+             discovery_results, discovery_tasks, discovery_jobs
              restart identity cascade
   `;
   await clearSendJobs();
@@ -59,7 +60,10 @@ async function clearSendJobs(): Promise<void> {
     where table_schema = 'pgboss' and table_name = 'job'
   `;
   if (exists) {
-    await db()`delete from pgboss.job where name = ${SEND_JOB} or name like 'campaign.%'`;
+    await db()`
+      delete from pgboss.job
+      where name = ${SEND_JOB} or name like 'campaign.%' or name like 'discovery.%'
+    `;
   }
 }
 

@@ -407,6 +407,162 @@ describe('metrics', () => {
   });
 });
 
+describe('promocodes', () => {
+  let keys = 0;
+  const paid = (payload: unknown) => ({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `promo-key-${(keys += 1)}` },
+    body: JSON.stringify(payload),
+  });
+
+  async function code(fields: Record<string, unknown>, token = tokenA): Promise<string> {
+    const res = await tenant(
+      '/v1/promocodes',
+      {
+        method: 'POST',
+        ...json({
+          currency: 'SAR',
+          discount: { type: 'fixed', value: 5000 },
+          funders: [{ party: 'platform', share: 1 }],
+          ...fields,
+        }),
+      },
+      token,
+    );
+    expect(res.status).toBe(201);
+    return (await body<{ promocode: { id: string } }>(res)).promocode.id;
+  }
+
+  async function redeem(
+    codeName: string,
+    buyerRef: string,
+    orderRef: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<string> {
+    const res = await tenant(
+      '/v1/redemptions',
+      paid({ code: codeName, buyerRef, orderRef, cart: { currency: 'SAR', subtotal: 100000 }, ...extra }),
+    );
+    expect(res.status).toBe(201);
+    return (await body<{ redemption: { id: string } }>(res)).redemption.id;
+  }
+
+  type Usage = {
+    uses: number;
+    spend: number;
+    reserved: { count: number; amount: number };
+    settled: { count: number; amount: number };
+    released: { count: number; amount: number };
+    buyers: number;
+    remainingUses: number | null;
+    remainingSpend: number | null;
+    lastRedeemedAt: string | null;
+  };
+  type Row = { id: string; code: string; tenantName: string; availability: string; usage: Usage };
+
+  const list = async (query = '') =>
+    body<{ items: Row[]; nextCursor: string | null }>(await op(`/internal/promocodes${query}`));
+
+  it('shows each code with what its budget has spent', async () => {
+    const id = await code({ code: 'SPRING', budget: { maxUses: 3, maxSpend: 20000 } });
+    const settled = await redeem('SPRING', 'buyer-1', 'order-1', { buyerCompanyRef: 'co-1' });
+    const released = await redeem('SPRING', 'buyer-2', 'order-2');
+    await redeem('SPRING', 'buyer-2', 'order-3');
+    expect((await tenant(`/v1/redemptions/${settled}/settle`, paid({}))).status).toBe(200);
+    expect((await tenant(`/v1/redemptions/${released}/release`, paid({ reason: 'cancelled' }))).status).toBe(200);
+
+    const { items } = await list(`?tenantId=${TENANT_A}`);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id,
+      code: 'SPRING',
+      tenantName: 'Tenant A',
+      availability: 'live',
+      budget: { maxUses: 3, maxSpend: 20000 },
+      funders: [{ party: 'platform', share: 1 }],
+    });
+    expect(items[0]!.usage).toEqual({
+      uses: 2,
+      spend: 10000,
+      reserved: { count: 1, amount: 5000 },
+      settled: { count: 1, amount: 5000 },
+      released: { count: 1, amount: 5000 },
+      buyers: 2,
+      remainingUses: 1,
+      remainingSpend: 10000,
+      lastRedeemedAt: expect.any(String),
+    });
+
+    const detail = await op(`/internal/promocodes/${id}`);
+    expect(detail.status).toBe(200);
+    expect((await body<{ promocode: Row }>(detail)).promocode).toEqual(items[0]);
+
+    // A redemption links back to its code.
+    const feed = await body<{
+      items: { promocodeId: string; orderRef: string; buyerCompanyRef: string | null }[];
+    }>(await op(`/internal/redemptions?promocodeId=${id}`));
+    expect(feed.items).toHaveLength(3);
+    expect(feed.items.every((r) => r.promocodeId === id)).toBe(true);
+    // And says which of the client's companies it was, when the client said.
+    const byOrder = Object.fromEntries(feed.items.map((r) => [r.orderRef, r.buyerCompanyRef]));
+    expect(byOrder).toEqual({ 'order-1': 'co-1', 'order-2': null, 'order-3': null });
+  });
+
+  it('says why a code cannot be redeemed', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    await code({ code: 'OPEN' });
+    const paused = await code({ code: 'PAUSED' });
+    await tenant(`/v1/promocodes/${paused}`, { method: 'PATCH', ...json({ status: 'paused' }) });
+    await code({ code: 'OLD', startsAt: new Date(Date.now() - 2 * day), endsAt: new Date(Date.now() - day) });
+    await code({ code: 'SOON', startsAt: new Date(Date.now() + day) });
+    await code({ code: 'ONCE', budget: { maxUses: 1 } });
+    await redeem('ONCE', 'buyer-1', 'order-once');
+
+    const { items } = await list();
+    const by = Object.fromEntries(items.map((r) => [r.code, r]));
+    expect(by['OPEN']!.availability).toBe('live');
+    expect(by['PAUSED']!.availability).toBe('paused');
+    expect(by['OLD']!.availability).toBe('expired');
+    expect(by['SOON']!.availability).toBe('scheduled');
+    expect(by['ONCE']!.availability).toBe('exhausted');
+    expect(by['ONCE']!.usage.remainingUses).toBe(0);
+    expect(by['OPEN']!.usage).toMatchObject({ uses: 0, remainingUses: null, remainingSpend: null, lastRedeemedAt: null });
+  });
+
+  it('filters, pages and spans tenants', async () => {
+    for (const name of ['ALPHA1', 'ALPHA2', 'ALPHA3', 'BETA']) await code({ code: name });
+    const paused = await code({ code: 'ALPHA4' });
+    await tenant(`/v1/promocodes/${paused}`, { method: 'PATCH', ...json({ status: 'paused' }) });
+    await code({ code: 'ALPHAB' }, await tokenFor(TENANT_B));
+
+    expect((await list('?code=alpha')).items).toHaveLength(5);
+    expect((await list(`?code=alpha&tenantId=${TENANT_A}`)).items).toHaveLength(4);
+    expect((await list('?status=paused')).items.map((r) => r.code)).toEqual(['ALPHA4']);
+    // LIKE wildcards in the filter are matched literally.
+    expect((await list('?code=%25')).items).toHaveLength(0);
+
+    const first = await list('?limit=4');
+    expect(first.items).toHaveLength(4);
+    expect(first.items[0]!.code).toBe('ALPHAB');
+    expect(first.items[0]!.tenantName).toBe('Tenant B');
+    const second = await list(`?limit=4&cursor=${first.nextCursor}`);
+    const seen = [...first.items, ...second.items].map((r) => r.code);
+    expect(new Set(seen).size).toBe(6);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('404s an unknown code and refuses a tenant JWT', async () => {
+    expect((await op('/internal/promocodes/00000000-0000-0000-0000-000000000000')).status).toBe(404);
+    expect((await op('/internal/promocodes/not-a-uuid')).status).toBe(404);
+    const res = await app.fetch(
+      new Request('http://engine.test/internal/promocodes', {
+        headers: { Authorization: `Bearer ${tokenA}` },
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('the live stream', () => {
   /** Read SSE frames off the response body for a moment, then stop. */
   async function listen(

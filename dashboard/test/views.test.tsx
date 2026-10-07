@@ -23,6 +23,8 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         messages: () => ok({ items: fixtures.messages, nextCursor: null }),
         message: () => ok(fixtures.messageDetail),
         redemptions: () => ok({ items: fixtures.redemptions, nextCursor: null }),
+        promocodes: () => ok({ items: fixtures.promocodes, nextCursor: null }),
+        promocode: () => ok({ promocode: fixtures.promocodes[0] }),
         invites: () => ok({ items: [], nextCursor: null }),
         companies: () => ok({ items: fixtures.companies, nextCursor: null }),
         deliveries: () => ok({ items: fixtures.deliveries, nextCursor: null }),
@@ -102,6 +104,33 @@ describe('views render', () => {
     const { CampaignsView, CampaignDetailView } = await import('../src/views/campaigns.js');
     expect(render(<CampaignsView tenantId="" status="" onFilters={() => {}} />)).toContain('Campaigns');
     expect(render(<CampaignDetailView id="33333333-3333-3333-3333-333333333333" />)).toBeTruthy();
+  });
+
+  it('promocodes', async () => {
+    mockApi();
+    const { PromocodesView, PromocodeDetailView, PromocodeDetail, PromocodeTable } = await import(
+      '../src/views/promocodes.js'
+    );
+    expect(render(<PromocodesView tenantId="" status="" code="" onFilters={() => {}} />)).toContain('Promocodes');
+    expect(render(<PromocodeDetailView id="77777777-7777-7777-7777-777777777777" />)).toBeTruthy();
+
+    const table = render(<PromocodeTable rows={fixtures.promocodes} showTenant />);
+    expect(table).toContain('SAVE10');
+    expect(table).toContain('Acme Supplies');
+    expect(table).toContain('10%');
+    expect(table).toContain('expired');
+    expect(table).toMatch(/only 1(<!-- -->)?\s*(<!-- -->)?product</);
+
+    const detail = render(<PromocodeDetail p={fixtures.promocodes[0]!} loadedAt={null} />);
+    expect(detail).toContain('live');
+    expect(detail).toContain('60%');
+    expect(detail).toContain('cart.subtotal');
+    expect(detail).toContain('99999999-9999-9999-9999-999999999999');
+    // A code with no budget and no rules says so rather than showing zeros.
+    const open = render(<PromocodeDetail p={fixtures.promocodes[1]!} loadedAt={null} />);
+    expect(open).toContain('no limit');
+    expect(open).toContain('none');
+    expect(open).toContain('all products');
   });
 
   it('metrics', async () => {

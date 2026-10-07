@@ -1,6 +1,7 @@
 import { db, type Tx } from '../../db/client.js';
 import { env } from '../../env.js';
 import { emit } from '../../spine/events/index.js';
+import { resolve as resolveCompany } from '../../spine/registry/index.js';
 import { applyDocument, evaluate } from '../../spine/rules/index.js';
 import { activeLedger } from './ledger/index.js';
 import {
@@ -52,6 +53,31 @@ export type PromocodeRow = {
   updated_at: Date;
 };
 
+export type Availability = 'paused' | 'ended' | 'scheduled' | 'expired' | 'exhausted' | 'live';
+
+/**
+ * Whether a code can be redeemed at all right now, in one word, for whoever
+ * has to read it at a glance. The first true answer wins, in the order
+ * `validate` checks the same things. `live` does not promise every cart
+ * validates: per-buyer limits, the minimum subtotal and rules still apply.
+ *
+ * `usage` is what the budget counts: reserved and settled redemptions.
+ */
+export function availability(
+  promo: Pick<PromocodeRow, 'status' | 'starts_at' | 'ends_at' | 'budget'>,
+  usage: { uses: number; spend: number },
+  now: Date = new Date(),
+): Availability {
+  if (promo.status === 'paused') return 'paused';
+  if (promo.status === 'ended') return 'ended';
+  if (promo.starts_at.getTime() > now.getTime()) return 'scheduled';
+  if (promo.ends_at && promo.ends_at.getTime() <= now.getTime()) return 'expired';
+  const { maxUses, maxSpend } = promo.budget;
+  if (maxUses !== undefined && usage.uses >= maxUses) return 'exhausted';
+  if (maxSpend !== undefined && usage.spend >= maxSpend) return 'exhausted';
+  return 'live';
+}
+
 export type Hold = { party: string; holdRef: string; amount: number };
 
 export type RedemptionRow = {
@@ -60,6 +86,7 @@ export type RedemptionRow = {
   promocode_id: string;
   buyer_ref: string;
   company_id: string | null;
+  buyer_company_ref: string | null;
   order_ref: string;
   currency: string;
   discount_amount: string;
@@ -129,6 +156,8 @@ export type ValidateInput = {
   code: string;
   buyerRef: string;
   companyId?: string | undefined;
+  /** The client's own id for the buying company. Stored, never looked up. */
+  buyerCompanyRef?: string | undefined;
   cart: Cart;
   at?: Date | undefined;
 };
@@ -160,6 +189,12 @@ export async function validate(
 
   if (!promo) return { valid: false, reason: 'not_found' };
 
+  // A registry id the registry has never issued is the caller's mistake, and
+  // saying so here keeps it from reaching the foreign key on reserve.
+  if (input.companyId && !(await resolveCompany(tx, input.companyId))) {
+    return { valid: false, reason: 'unknown_company' };
+  }
+
   if (
     promo.status !== 'active' ||
     promo.starts_at.getTime() > now.getTime() ||
@@ -177,6 +212,7 @@ export async function validate(
   const context = {
     buyerRef: input.buyerRef,
     companyId: input.companyId ?? null,
+    buyerCompanyRef: input.buyerCompanyRef ?? null,
     cart: input.cart,
     code: promo.code,
     now: now.toISOString(),
@@ -223,7 +259,7 @@ export type Description =
   | {
       code: string;
       found: true;
-      status: 'active' | 'scheduled' | 'paused' | 'ended' | 'exhausted';
+      status: Availability;
       kind: 'percent' | 'fixed';
       percentBps: number | null;
       amount: number | null;
@@ -246,7 +282,7 @@ export async function describe(
   tx: Tx,
   input: { tenantId: string; codes: string[]; buyerRef: string; at?: Date | undefined },
 ): Promise<Description[]> {
-  const now = (input.at ?? new Date()).getTime();
+  const now = input.at ?? new Date();
 
   const rows = await tx<PromocodeRow[]>`
     select * from promocodes
@@ -266,21 +302,10 @@ export async function describe(
     const usage = await usageOf(tx, promo.id, input.buyerRef);
     const { budget, discount } = promo;
 
-    let status: Extract<Description, { found: true }>['status'] = 'active';
-    if (promo.status !== 'active') status = promo.status;
-    else if (promo.ends_at && promo.ends_at.getTime() <= now) status = 'ended';
-    else if (promo.starts_at.getTime() > now) status = 'scheduled';
-    else if (
-      (budget.maxUses !== undefined && usage.uses >= budget.maxUses) ||
-      (budget.maxSpend !== undefined && usage.spend >= budget.maxSpend)
-    ) {
-      status = 'exhausted';
-    }
-
     result.push({
       code,
       found: true,
-      status,
+      status: availability(promo, usage, now),
       kind: discount.type,
       percentBps: discount.type === 'percent' ? discount.value : null,
       amount: discount.type === 'fixed' ? discount.value : null,
@@ -387,10 +412,11 @@ export async function reserve(
 
   const [row] = await tx<RedemptionRow[]>`
     insert into redemptions
-      (tenant_id, promocode_id, buyer_ref, company_id, order_ref, currency,
-       discount_amount, status, expires_at)
+      (tenant_id, promocode_id, buyer_ref, company_id, buyer_company_ref, order_ref,
+       currency, discount_amount, status, expires_at)
     values (${input.tenantId}, ${verdict.promocodeId}, ${input.buyerRef},
-            ${input.companyId ?? null}, ${input.orderRef}, ${input.cart.currency},
+            ${input.companyId ?? null}, ${input.buyerCompanyRef ?? null}, ${input.orderRef},
+            ${input.cart.currency},
             ${verdict.discountAmount}, 'reserved',
             now() + (${ttl} || ' minutes')::interval)
     returning *
@@ -423,6 +449,8 @@ export async function reserve(
     payload: {
       promocodeId: verdict.promocodeId,
       orderRef: input.orderRef,
+      buyerRef: input.buyerRef,
+      buyerCompanyRef: input.buyerCompanyRef ?? null,
       discountAmount: verdict.discountAmount,
       holds,
       lines: verdict.lines,
@@ -492,7 +520,13 @@ export async function settle(
     type: 'promo.settled',
     subjectType: 'redemption',
     subjectId: redemption.id,
-    payload: { reserved, settled: final, orderRef: redemption.order_ref },
+    payload: {
+      reserved,
+      settled: final,
+      orderRef: redemption.order_ref,
+      buyerRef: redemption.buyer_ref,
+      buyerCompanyRef: redemption.buyer_company_ref,
+    },
   });
 
   return row!;
@@ -533,7 +567,12 @@ export async function release(
     type: 'promo.released',
     subjectType: 'redemption',
     subjectId: redemption.id,
-    payload: { reason: input.reason, orderRef: redemption.order_ref },
+    payload: {
+      reason: input.reason,
+      orderRef: redemption.order_ref,
+      buyerRef: redemption.buyer_ref,
+      buyerCompanyRef: redemption.buyer_company_ref,
+    },
   });
 
   return row!;

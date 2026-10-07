@@ -4,10 +4,12 @@ import { z } from 'zod';
 import { replay } from '../../../modules/webhooks/index.js';
 import { db } from '../../../db/client.js';
 import * as campaignFeeds from './campaigns.js';
+import { discoveryOperator } from './discovery.js';
 import * as feeds from './feeds.js';
 import { jobs, oneJob, retryJob, schedules } from './jobs.js';
 import { metrics } from './metrics.js';
 import { overview } from './overview.js';
+import * as promoFeeds from './promocodes.js';
 import { listQuery, page, resolveWindow, windowQuery } from './shared.js';
 import {
   HEARTBEAT_MS,
@@ -23,8 +25,8 @@ import {
  * The platform read side. Mounted under /internal, so the token middleware in
  * routes/internal.ts already guards it — a tenant JWT is not enough here.
  *
- * Read-only apart from two things an operator genuinely needs: retrying a
- * failed job and replaying a failed delivery.
+ * Read-only apart from what an operator genuinely needs: retrying a failed
+ * job, replaying a failed delivery, and creating a discovery job.
  *
  * This is the one place that reads across every module's tables. A dashboard
  * is inherently cross-cutting; it owns nothing and writes nothing, so nothing
@@ -33,6 +35,8 @@ import {
 export const operator = new Hono();
 
 const base = listQuery.merge(windowQuery);
+
+operator.route('/', discoveryOperator);
 
 operator.get('/internal/overview', async (c) => {
   const w = windowQuery.safeParse(c.req.query());
@@ -235,6 +239,28 @@ operator.get('/internal/campaigns/:id/runs/:runId/recipients', async (c) => {
 
   const items = await campaignFeeds.recipients({ campaignId: id.data, runId: runId.data, ...q.data });
   return c.json(page(items, q.data.limit));
+});
+
+operator.get('/internal/promocodes', async (c) => {
+  const q = listQuery
+    .extend({
+      tenantId: z.string().uuid().optional(),
+      status: z.string().max(30).optional(),
+      code: z.string().min(1).max(100).optional(),
+    })
+    .safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
+
+  const items = await promoFeeds.promocodes(q.data);
+  return c.json(page(items, q.data.limit));
+});
+
+operator.get('/internal/promocodes/:id', async (c) => {
+  const id = z.string().uuid().safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+
+  const promocode = await promoFeeds.onePromocode(id.data);
+  return promocode ? c.json({ promocode }) : c.json({ error: 'not found' }, 404);
 });
 
 operator.get('/internal/webhook-deliveries', async (c) => {

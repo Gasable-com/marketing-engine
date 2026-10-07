@@ -74,6 +74,7 @@ const validateBody = z.object({
   code: z.string().min(1).max(60),
   buyerRef: z.string().min(1).max(200),
   companyId: z.string().uuid().optional(),
+  buyerCompanyRef: z.string().min(1).max(200).optional(),
   cart,
   at: z.coerce.date().optional(),
 });

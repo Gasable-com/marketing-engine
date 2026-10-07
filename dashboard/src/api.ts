@@ -183,8 +183,10 @@ export type RedemptionRow = {
   id: string;
   tenantId: string;
   tenantName: string;
+  promocodeId: string;
   code: string;
   buyerRef: string;
+  buyerCompanyRef: string | null;
   orderRef: string;
   currency: string;
   discountAmount: string;
@@ -194,6 +196,45 @@ export type RedemptionRow = {
   releasedAt: string | null;
   releaseReason: string | null;
   expiresAt: string;
+};
+
+export type PromocodeRow = {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  code: string;
+  currency: string;
+  /** A percent `value` is basis points: 1000 is 10%. Amounts are minor units. */
+  discount: {
+    type: 'percent' | 'fixed';
+    value: number;
+    maxDiscount?: number;
+    minSubtotal?: number;
+    /** Limits the code to these products, matched on each cart item's sku. Absent or empty: all. */
+    productIds?: string[];
+  };
+  rules: unknown;
+  budget: { maxSpend?: number; maxUses?: number; perBuyerMaxUses?: number };
+  funders: { party: string; share: number }[];
+  startsAt: string;
+  endsAt: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  usage: {
+    /** Reserved plus settled: what the budget counts. */
+    uses: number;
+    spend: number;
+    reserved: { count: number; amount: number };
+    settled: { count: number; amount: number };
+    released: { count: number; amount: number };
+    buyers: number;
+    remainingUses: number | null;
+    remainingSpend: number | null;
+    lastRedeemedAt: string | null;
+  };
+  /** Whether it can be redeemed right now, decided by the engine. */
+  availability: string;
 };
 
 export type InviteRow = {
@@ -319,6 +360,8 @@ export const api = {
   message: (id: string) => get<MessageDetail>(`/messages/${id}`),
 
   redemptions: (params: Params) => get<Page<RedemptionRow>>('/redemptions', params),
+  promocodes: (params: Params) => get<Page<PromocodeRow>>('/promocodes', params),
+  promocode: (id: string) => get<{ promocode: PromocodeRow }>(`/promocodes/${id}`),
   invites: (params: Params) => get<Page<InviteRow>>('/invites', params),
   companies: (params: Params) => get<Page<CompanyRow>>('/companies', params),
 

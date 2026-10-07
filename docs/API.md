@@ -260,9 +260,16 @@ company is private to it.
 ```
 
 `source.type` is `rfq`, `import` or `api`. Identifier types are `cr`, `vat`,
-`domain` (strong: they merge) and `phone`, `email` (weak: they link). An email
-also yields its domain. `enrich: true` asks the registrar about a `cr` first,
-when a lookup is configured.
+`domain`, `gmaps` (strong: they merge) and `phone`, `email` (weak: they link).
+A domain is stored as its registrable domain (`https://www.shop.example.com.sa/x`
+→ `example.com.sa`, and `com`, `net`, `org`, `gov`, `edu`, `ac`, `co`, `sch` or
+`med` under any two-letter country code is a suffix too); one on a shared host such as `salla.sa`, `instagram.com`
+or `business.site` is rejected as `shared host` and kept only in the source's
+`data`. An email also yields its domain, unless that is a free-mail provider or
+a shared host. `gmaps` is a Google Maps place id or cid exactly as given
+(`[A-Za-z0-9:_-]`, up to 200). `enrich: true` asks the registrar about a `cr`
+first, when a lookup is configured. Sources `web` and `maps` are written by
+discovery itself, never by a caller.
 
 → `201 { "company", "created", "mergedFrom": [ … ] }`. Emits `company.created`
 or `company.updated`, and `company.merged` when two records turn out to be one.
@@ -289,12 +296,21 @@ Same shape, found by identifier. The value is normalised before matching.
 ### `PUT /v1/companies/:id/profile` — tenant JWT
 
 ```json
-{ "buys": ["diesel"], "sells": [], "sector": "energy", "city": "Riyadh", "size": "50-200" }
+{ "buys": ["diesel"], "sells": [], "sector": "energy", "city": "Riyadh", "size": "50-200",
+  "products": ["توريد الديزل", "Diesel fuel"], "roles": ["distributor"],
+  "cities": ["Riyadh", "Dammam"], "countries": ["SA"], "quality": "full",
+  "profiledAt": "2026-10-01T00:00:00Z" }
 ```
 
 Shared, like the company. Category codes are free strings; the engine owns no
-catalogue and validates nothing against one. → `200 { "profile": … }`. Emits
-`company.profiled`.
+catalogue and validates nothing against one. `products` are product names in
+the company's own words, any language (`sells` keeps its meaning as category
+codes). `roles` are any of `manufacturer`, `distributor`, `wholesaler`,
+`retailer`, `installer`, `service_provider`, `transporter`, `other`.
+`countries` are ISO 3166-1 alpha-2, upper-cased. `quality` is `full` or `thin`,
+and `profiledAt`, an ISO timestamp, is when web evidence last filled the profile. A list left out
+or empty, and a value left out, keeps what is stored. → `200 { "profile": … }`.
+Emits `company.profiled`.
 
 ### `POST /v1/companies/import` — tenant JWT, `Content-Type: text/csv`
 
@@ -392,16 +408,24 @@ product list of a discount can change; an empty list lifts the limit.
 ### `POST /v1/promocodes/validate` — tenant JWT
 
 ```json
-{ "code": "SAVE10", "buyerRef": "cust-1", "companyId": null,
+{ "code": "SAVE10", "buyerRef": "cust-1", "buyerCompanyRef": "acct-42", "companyId": null,
   "cart": { "currency": "SAR", "subtotal": 80000,
             "items": [{ "sku": "lpg", "qty": 1, "unitPrice": 80000 }] } }
 ```
 
 → `200 { "valid": true, "discountAmount": 5000, "promocodeId": …, "lines": [{ "index": 0, "sku": "lpg", "amount": 5000 }] }` or
 `200 { "valid": false, "reason": … }`. Reasons, first true one wins:
-`not_found`, `not_active`, `currency_mismatch`, `no_eligible_items`,
+`not_found`, `unknown_company`, `not_active`, `currency_mismatch`, `no_eligible_items`,
 `min_subtotal`, `rule`, `budget_uses`, `budget_buyer`, `budget_spend`.
 Writes nothing.
+
+`buyerRef` and `buyerCompanyRef` are your own ids for the buyer and the buying
+company. Both are opaque: the engine stores them on the redemption and in its
+events and never looks them up, and a code's rules can name them. `companyId`
+is optional and is a **registry** id, for a company the engine knows (one it
+invited, imported or was told about through `/v1/companies`); marketplace
+members are not in the registry, so send `buyerCompanyRef` for them, not
+`companyId`. A `companyId` the registry never issued is `unknown_company`.
 
 `lines` has one entry per cart item, in the order sent, with `amount: 0` for an
 item the code does not cover. The discount is split across the covered items by
@@ -421,16 +445,17 @@ What each code is, for a buyer's list of saved codes. Up to 20 codes:
 → `200 { "codes": [ … ] }`, one entry per code in the order sent, `code` as sent:
 
 ```json
-{ "code": "WELCOME5", "found": true, "status": "active",
+{ "code": "WELCOME5", "found": true, "status": "live",
   "kind": "percent", "percentBps": 1000, "amount": null, "currency": "SAR",
   "maxDiscount": 20000, "minSubtotal": 50000, "skus": [],
   "startsAt": "…", "endsAt": null, "usesLeftForBuyer": 1 }
 { "code": "NOPE", "found": false }
 ```
 
-`status`, first true one wins: `paused` or `ended` (set on the code), `ended`
-(`endsAt` passed), `scheduled` (`startsAt` not reached), `exhausted` (`maxUses`
-reached or `maxSpend` used up), `active`. `percentBps` is set for a percent code
+`status` is the same `availability` word the operator view shows, first true
+one wins: `paused` or `ended` (set on the code), `scheduled` (`startsAt` not
+reached), `expired` (`endsAt` passed), `exhausted` (`maxUses` reached or
+`maxSpend` used up), `live`. `live` does not promise a cart validates. `percentBps` is set for a percent code
 and `amount` (minor units) for a fixed one; the other is `null`. `skus` is the
 product list, `[]` for every product. `usesLeftForBuyer` is this `buyerRef`'s
 remaining uses under `perBuyerMaxUses` (reserved and settled count), `null`
@@ -451,7 +476,8 @@ and one set of holds.
 stored response, lines included. The same `orderRef` under a new key returns
 the same redemption with the lines that were held, read back from its
 `promo.reserved` event, whatever cart that call sent. Emits `promo.reserved`,
-with the lines in its payload. A cart whose items add up to more than
+with the lines, `buyerRef` and `buyerCompanyRef` in its payload; `promo.settled`
+and `promo.released` carry `buyerRef` and `buyerCompanyRef` too (null when not sent). A cart whose items add up to more than
 `Number.MAX_SAFE_INTEGER` is a `400`, here and on validate.
 
 ### `POST /v1/redemptions/:id/settle` — tenant JWT, **`Idempotency-Key` required**
@@ -1007,13 +1033,31 @@ secret) and counts over 24h, 7d and 30d.
 | `GET /internal/events/:id` | one event with its full payload |
 | `GET /internal/messages` | `tenantId`, `status`, `channel`, `provider`, `companyId`, `address` |
 | `GET /internal/messages/:id` | the message, its events, delivery reports with raw provider bodies, fallback children and parent |
-| `GET /internal/redemptions` | `tenantId`, `status`, `promocodeId` |
+| `GET /internal/redemptions` | `tenantId`, `status`, `promocodeId`; each row carries `promocodeId` |
+| `GET /internal/promocodes` | `tenantId`, `status`, `code` (case-insensitive prefix); each row is the code with `tenantName`, `usage` and `availability`, below |
+| `GET /internal/promocodes/:id` | `{ promocode }`, the same row |
 | `GET /internal/invites` | `tenantId`, `status` |
 | `GET /internal/companies` | `q` (trigram on the normalised name), `country`, `onPlatform` |
 | `GET /internal/webhook-deliveries` | `status`, `tenantId`, `endpointId` |
 | `GET /internal/campaigns` | `tenantId`, `status`; each row has `tenantName`, `audienceName`, `nextRunAt` and `lastRun` with its counts |
 | `GET /internal/campaigns/:id` | `{ campaign, runs }`, every run with its counts |
 | `GET /internal/campaigns/:id/runs/:runId/recipients` | `state`; each recipient with its message's channel and status. Ordered by contact id |
+
+A promocode row's `usage`, all amounts in minor units:
+
+```json
+{ "uses": 2, "spend": 10000,
+  "reserved": { "count": 1, "amount": 5000 },
+  "settled": { "count": 1, "amount": 5000 },
+  "released": { "count": 1, "amount": 5000 },
+  "buyers": 2, "remainingUses": 1, "remainingSpend": 10000,
+  "lastRedeemedAt": "…" }
+```
+
+`uses` and `spend` count reserved and settled redemptions, as the budget check
+does. `remainingUses` and `remainingSpend` are `null` when that budget is
+unset. `availability` is the first of `paused`, `ended`, `scheduled`,
+`expired`, `exhausted`, `live` that holds.
 
 Each message row carries a `timeline` of its own events in order, so a list
 answers "what happened to this?" without opening it.
@@ -1034,6 +1078,95 @@ answers "what happened to this?" without opening it.
 
 - `POST /internal/webhook-deliveries/:id/replay` → `202`, any tenant including
   the platform endpoint.
+
+### Discovery jobs (operator)
+
+An operator's search for supplier companies: a product and the countries to
+look in, run for one tenant. A job is one task per country on the
+`discovery.task` queue, and a task runs through named stages; in this step the
+only stage is `rank`, which ranks the existing pool with the `products` finder.
+Nothing calls the network yet. Results are the tenant's own.
+
+#### `POST /internal/discovery/jobs`
+
+```json
+{ "tenantId": "…", "product": "ديزل", "category": "fuel", "countries": ["SA", "AE"],
+  "resultLimit": 50 }
+```
+
+`product` is 2–200 characters after trimming; `category` is an optional label
+of up to 200; `countries` are 1–10 ISO 3166-1 alpha-2 codes, upper-cased, each
+once; `resultLimit` is 1–200 per country, default 50. `400` for a bad body,
+`404` for an unknown tenant. → `201 { job, tasks }` in the shape of
+`GET /internal/discovery/jobs/:id`, the job `running` and every task `queued`.
+Emits `discovery.job.created`.
+
+#### `GET /internal/discovery/jobs?tenantId=&status=`
+
+Newest first. `status` is `running`, `done` or `failed`. Each row: `id`,
+`tenantId`, `tenantName`, `product`, `category`, `countries`, `status`,
+`counts`, `createdAt`, `finishedAt`.
+
+#### `GET /internal/discovery/jobs/:id`
+
+```json
+{ "job": { "id": "…", "tenantId": "…", "tenantName": "…", "product": "ديزل",
+           "category": null, "side": "suppliers", "countries": ["SA", "AE"],
+           "terms": [], "resultLimit": 50, "status": "done",
+           "counts": { "ranked": 2 }, "createdAt": "…", "finishedAt": "…" },
+  "tasks": [{ "id": "…", "country": "SA", "status": "done", "stage": "rank",
+              "counts": { "ranked": 2 }, "error": null, "attempts": 1,
+              "createdAt": "…", "startedAt": "…", "finishedAt": "…" }] }
+```
+
+Tasks come in the job's country order. A task is `queued`, `running`, `done`
+or `failed`; `stage` is the stage running now or the last one run, and
+`error` is set when the task failed. A task is retried by the queue and failed
+on its last attempt. The job is `done` once no task is open and at least one is
+done, `failed` if every task failed; its `counts` are its tasks' counts
+summed.
+
+#### `GET /internal/discovery/jobs/:id/results?country=`
+
+Ranked best first (`rank` is 1.. within each country), paged with `limit` and
+`cursor` like every list. Each row:
+
+```json
+{ "id": "17", "rank": 1, "score": 0.7, "country": "SA",
+  "reasons": ["product: ديزل ~ توريد الديزل", "profile: full", "profiled 5 days ago"],
+  "company": { "id": "…", "name": "…", "country": "SA" },
+  "profile": { "products": ["توريد الديزل"], "roles": ["distributor"],
+               "cities": ["Riyadh"], "quality": "full", "profiledAt": "…" },
+  "identifiers": [{ "type": "domain", "value": "example.com.sa" },
+                  { "type": "gmaps", "value": "ChIJ…" },
+                  { "type": "phone", "value": "+966…" }] }
+```
+
+`profile` is `null` for a company without one. `identifiers` are its
+`domain`, `email`, `gmaps` and `phone` values.
+
+**How `rank` scores.** A product term matches a profile product when the
+folded term is inside the folded product, or their trigram similarity is at
+least 0.4; only companies with a match come back, in the task's country by
+`companies.country` or profile `countries`, never merged away or on the
+platform. The score (0..1) is 0.5 × the best product similarity (containment
+counts as 1), plus 0.15 for a matching role, 0.15 for a matching city, 0.1 for
+a `full` profile or 0.05 for a `thin` one, and 0.1 for freshness: full within
+90 days of `profiledAt`, falling to nothing at 365. Each signal that scored is
+one reason.
+
+#### Events
+
+| Event | Payload |
+| --- | --- |
+| `discovery.job.created` | `jobId`, `product`, `countries` |
+| `discovery.task.finished` | `jobId`, `taskId`, `country`, `counts` |
+| `discovery.task.failed` | `jobId`, `taskId`, `country`, `error`, `attempts` |
+| `discovery.job.finished` | `jobId`, `status`, `counts` |
+
+All four have `subjectType: "discovery_job"` and the job's id as `subjectId`,
+so one filter reads a job's whole history. Every rank also writes a
+`finder_runs` row with `finder = "products"`.
 
 ### `GET /internal/metrics`
 
@@ -1070,7 +1203,9 @@ here was later rolled back.
 `consent.revoked` · `suppression.added` · `message.queued` · `message.blocked` ·
 `message.sent` · `message.delivered` · `message.read` · `message.failed` ·
 `message.replied` · `message.fallback` · `company.created` · `company.updated` ·
-`company.merged` · `company.profiled` · `discovery.searched` · `invite.sent` ·
+`company.merged` · `company.profiled` · `discovery.searched` ·
+`discovery.job.created` · `discovery.task.finished` · `discovery.task.failed` ·
+`discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·
 `promo.released` · `contact.upserted` · `audience.saved` · `audience.deleted` ·
 `campaign.created` · `campaign.scheduled` · `campaign.run.started` ·

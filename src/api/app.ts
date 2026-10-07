@@ -19,6 +19,7 @@ import { webhookEndpoints } from './routes/webhook-endpoints.js';
 import { webhooks } from './routes/webhooks.js';
 import { InvalidAddressError } from '../spine/contacts/normalize.js';
 import { CampaignError } from '../modules/campaigns/index.js';
+import { DiscoveryError } from '../modules/discovery/index.js';
 import { MessagingError } from '../modules/messaging/errors.js';
 import { PromocodeError } from '../modules/promocodes/index.js';
 import { WebhookError } from '../modules/webhooks/index.js';
@@ -38,6 +39,9 @@ export function createApp() {
       return c.json({ error: err.code, message: err.message }, err.status);
     }
     if (err instanceof CampaignError) {
+      return c.json({ error: err.code, message: err.message, ...(err.detail ?? {}) }, err.status);
+    }
+    if (err instanceof DiscoveryError) {
       return c.json({ error: err.code, message: err.message, ...(err.detail ?? {}) }, err.status);
     }
     if (err instanceof MessagingError) {

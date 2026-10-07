@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import {
+  availability,
   expireReservations,
   internalLedger,
   reconcile,
@@ -416,6 +417,87 @@ describe('rules', () => {
   });
 });
 
+describe('the buyer company', () => {
+  async function payloads(type: string) {
+    const rows = await db()<{ payload: Record<string, unknown> }[]>`
+      select payload from events where type = ${type} order by occurred_at, id
+    `;
+    return rows.map((r) => r.payload);
+  }
+
+  it('stores buyerCompanyRef on the redemption and every step of its events', async () => {
+    await createCode();
+    expect(await validateCode(80000, { buyerCompanyRef: 'co-1' })).toMatchObject({ valid: true });
+
+    const kept = await reserveOrder('order-1', 80000, { buyerCompanyRef: 'co-1' });
+    const dropped = await reserveOrder('order-2', 80000, { buyerCompanyRef: 'co-1' });
+    expect(kept.status).toBe(201);
+    const [row] = await db()<{ buyer_company_ref: string | null }[]>`
+      select buyer_company_ref from redemptions where order_ref = 'order-1'
+    `;
+    expect(row!.buyer_company_ref).toBe('co-1');
+
+    await request(`/v1/redemptions/${kept.body.redemption!.id}/settle`, { method: 'POST', ...paid({}) });
+    await request(`/v1/redemptions/${dropped.body.redemption!.id}/release`, {
+      method: 'POST',
+      ...paid({ reason: 'cancelled' }),
+    });
+
+    const who = { buyerRef: 'buyer-1', buyerCompanyRef: 'co-1' };
+    for (const type of ['promo.reserved', 'promo.settled', 'promo.released']) {
+      const all = await payloads(type);
+      expect(all.length).toBeGreaterThan(0);
+      for (const payload of all) expect(payload).toMatchObject(who);
+    }
+  });
+
+  it('is null in the events when the client does not send it', async () => {
+    await createCode();
+    expect((await reserveOrder('order-1')).status).toBe(201);
+    expect((await payloads('promo.reserved'))[0]).toMatchObject({ buyerCompanyRef: null });
+  });
+
+  it("lets a code's own rule name companies by the client's ids", async () => {
+    await createCode({ rules: { '==': [{ var: 'buyerCompanyRef' }, 'co-1'] } });
+    expect(await validateCode(80000, { buyerCompanyRef: 'co-1' })).toMatchObject({ valid: true });
+    expect(await validateCode(80000, { buyerCompanyRef: 'co-2' })).toMatchObject({
+      valid: false,
+      reason: 'rule',
+    });
+  });
+
+  it('answers unknown_company for a companyId the registry never issued', async () => {
+    await createCode();
+    const stranger = '00000000-0000-4000-8000-000000000001';
+    expect(await validateCode(80000, { companyId: stranger })).toEqual({
+      valid: false,
+      reason: 'unknown_company',
+    });
+
+    const refused = await reserveOrder('order-1', 80000, { companyId: stranger });
+    expect(refused).toEqual({ status: 200, body: { valid: false, reason: 'unknown_company' } });
+    expect(await db()`select id from redemptions`).toHaveLength(0);
+
+    // A company the registry does know still reserves, and is stored.
+    const created = await request('/v1/companies', {
+      method: 'POST',
+      ...json({
+        name: 'Known Trading',
+        country: 'SA',
+        identifiers: [{ type: 'cr', value: '1010999999' }],
+        source: { type: 'api', ref: 'test' },
+      }),
+    });
+    expect(created.status).toBe(201);
+    const { company } = (await created.json()) as { company: { id: string } };
+    expect((await reserveOrder('order-2', 80000, { companyId: company.id })).status).toBe(201);
+    const [row] = await db()<{ company_id: string }[]>`
+      select company_id::text from redemptions where order_ref = 'order-2'
+    `;
+    expect(row!.company_id).toBe(company.id);
+  });
+});
+
 describe('rounding', () => {
   it('splits a discount three ways without losing a halala', async () => {
     await createCode({
@@ -496,7 +578,7 @@ describe('describe', () => {
       {
         code: 'pct10',
         found: true,
-        status: 'active',
+        status: 'live',
         kind: 'percent',
         percentBps: 1000,
         amount: null,
@@ -521,7 +603,7 @@ describe('describe', () => {
     ]);
   });
 
-  it('says paused, ended, scheduled and exhausted', async () => {
+  it('says paused, expired, scheduled and exhausted', async () => {
     const paused = await createCode({ code: 'PAUSED' });
     await request(`/v1/promocodes/${paused.id}`, { method: 'PATCH', ...json({ status: 'paused' }) });
     await createCode({ code: 'OVER', startsAt: '2020-01-01T00:00:00Z', endsAt: '2020-02-01T00:00:00Z' });
@@ -530,7 +612,7 @@ describe('describe', () => {
     await reserveOrder('order-1', 80000, { buyerRef: 'buyer-2' });
 
     const { codes } = await describeCodes(['PAUSED', 'OVER', 'LATER', 'SAVE10']);
-    expect(codes.map((c) => c.status)).toEqual(['paused', 'ended', 'scheduled', 'exhausted']);
+    expect(codes.map((c) => c.status)).toEqual(['paused', 'expired', 'scheduled', 'exhausted']);
   });
 
   it("counts this buyer's uses left, and gives a released one back", async () => {
@@ -796,5 +878,37 @@ describe('product lists and lines', () => {
       ...json({ code: 'DIESEL10', buyerRef: 'buyer-1', cart: huge }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('availability', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  const promo = (fields: Partial<Parameters<typeof availability>[0]> = {}) => ({
+    status: 'active' as const,
+    starts_at: new Date('2026-09-01T00:00:00Z'),
+    ends_at: null,
+    budget: {},
+    ...fields,
+  });
+  const unused = { uses: 0, spend: 0 };
+
+  it('answers with the first reason in the order validate checks them', () => {
+    expect(availability(promo(), unused, now)).toBe('live');
+    const past = new Date('2026-09-30T00:00:00Z');
+
+    // Stored status first, even when the dates also say no.
+    expect(availability(promo({ status: 'paused', ends_at: past }), unused, now)).toBe('paused');
+    expect(availability(promo({ status: 'ended' }), unused, now)).toBe('ended');
+
+    expect(availability(promo({ starts_at: new Date('2026-10-02T00:00:00Z') }), unused, now)).toBe('scheduled');
+
+    // An expired code at its use limit is expired: the dates come before the budget.
+    const full = { uses: 1, spend: 100 };
+    expect(availability(promo({ ends_at: past, budget: { maxUses: 1 } }), full, now)).toBe('expired');
+    expect(availability(promo({ ends_at: now }), unused, now)).toBe('expired');
+
+    expect(availability(promo({ budget: { maxUses: 1 } }), full, now)).toBe('exhausted');
+    expect(availability(promo({ budget: { maxSpend: 100 } }), full, now)).toBe('exhausted');
+    expect(availability(promo({ budget: { maxUses: 2, maxSpend: 101 } }), full, now)).toBe('live');
   });
 });

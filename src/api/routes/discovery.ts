@@ -6,6 +6,7 @@ import {
   companyForInvite,
   invite,
   openInvite,
+  PROFILE_ROLES,
   search,
   setProfile,
   type InviteRow,
@@ -31,6 +32,17 @@ const profileBody = z.object({
   sector: z.string().min(1).max(100).optional(),
   city: z.string().min(1).max(100).optional(),
   size: z.string().min(1).max(50).optional(),
+  // The same limits the columns check.
+  products: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+  roles: z.array(z.enum(PROFILE_ROLES)).max(PROFILE_ROLES.length).optional(),
+  cities: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  countries: z
+    .array(z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'an ISO 3166-1 alpha-2 code'))
+    .max(50)
+    .optional(),
+  quality: z.enum(['full', 'thin']).optional(),
+  // An ISO timestamp only: coercing null or a number would store 1970.
+  profiledAt: z.string().datetime({ offset: true }).pipe(z.coerce.date()).optional(),
 });
 
 const inviteBody = z.object({

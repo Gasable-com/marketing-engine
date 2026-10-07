@@ -63,6 +63,7 @@ never part of `npm test` or CI.
 | `GET /v1/invites/:id` | Bearer JWT | one of your invites |
 | `GET /i/:token` | public | the invite link; redirects to signup |
 | `POST /internal/invites/accept` | `X-Internal-Token` | the marketplace reporting a signup |
+| `POST`/`GET /internal/discovery/jobs`, `GET …/:id`, `GET …/:id/results` | `X-Internal-Token` | an operator's discovery job for a tenant: create, read, ranked results |
 | `POST`/`GET /v1/promocodes` | Bearer JWT | create a code; list with usage |
 | `GET`/`PATCH /v1/promocodes/:id` | Bearer JWT | one code; pause or end it |
 | `POST /v1/promocodes/validate` | Bearer JWT | what is this code worth on this cart? |
@@ -248,7 +249,8 @@ not by name:
 | --- | --- | --- |
 | `cr` | digits only | strong |
 | `vat` | digits only | strong |
-| `domain` | bare host, no scheme, no `www.` | strong |
+| `domain` | registrable domain: no scheme, path or subdomains (`com.sa`-style suffixes kept) | strong |
+| `gmaps` | Google Maps place id or cid, as given | strong |
 | `phone` | E.164 | weak |
 | `email` | lower-cased; also yields its domain | weak |
 
@@ -258,7 +260,9 @@ were always the same company. **Weak** ones link but never merge, because a
 phone number or a shared mailbox moves between businesses; one already pointing
 elsewhere is left where it is and noted on the source row. Free-mail domains
 (`gmail.com` and friends) and `PLATFORM_DOMAIN` are dropped: they identify
-nobody.
+nobody. So are shared hosts (`salla.sa`, `instagram.com`, `business.site` and
+the rest of `SHARED_HOSTS`), where many companies have pages: a URL there is
+rejected as `shared host` and kept only in the source row's `data`.
 
 Only when no strong identifier matches does the name get a say, and then only
 to **link**, never to merge, at a similarity of 0.90 or better on the

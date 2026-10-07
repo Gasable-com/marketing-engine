@@ -3,6 +3,7 @@ import { api, type TenantDetail, type TenantRow } from '../api.js';
 import { count, money } from '../format.js';
 import { href } from '../router.js';
 import { Badge, Card, Empty, Failed, Loading, Pager, Stamp, Time, useAsync } from '../ui/index.js';
+import { PromocodeTable } from './promocodes.js';
 
 export function TenantsView() {
   const [rows, setRows] = useState<TenantRow[]>([]);
@@ -69,7 +70,7 @@ export function TenantsView() {
   );
 }
 
-const TABS = ['messages', 'redemptions', 'invites', 'deliveries'] as const;
+const TABS = ['messages', 'promocodes', 'redemptions', 'invites', 'deliveries'] as const;
 type Tab = (typeof TABS)[number];
 
 export function TenantDetailView({ id }: { id: string }) {
@@ -219,6 +220,7 @@ function Stat2({ k, v }: { k: string; v: number }) {
 function TenantTab({ tab, tenantId }: { tab: Tab; tenantId: string }) {
   const { state } = useAsync(async () => {
     if (tab === 'messages') return api.messages({ tenantId, limit: 50 });
+    if (tab === 'promocodes') return api.promocodes({ tenantId, limit: 50 });
     if (tab === 'redemptions') return api.redemptions({ tenantId, limit: 50 });
     if (tab === 'invites') return api.invites({ tenantId, limit: 50 });
     return api.deliveries({ tenantId, limit: 50 });
@@ -249,18 +251,28 @@ function TenantTab({ tab, tenantId }: { tab: Tab; tenantId: string }) {
     );
   }
 
+  if (tab === 'promocodes') {
+    return <PromocodeTable rows={state.data.items as import('../api.js').PromocodeRow[]} />;
+  }
+
   if (tab === 'redemptions') {
     const items = state.data.items as import('../api.js').RedemptionRow[];
     return (
       <table>
         <thead>
-          <tr><th>reserved</th><th>code</th><th>order</th><th class="num">discount</th><th>status</th></tr>
+          <tr><th>reserved</th><th>code</th><th>buyer</th><th>order</th><th class="num">discount</th><th>status</th></tr>
         </thead>
         <tbody>
           {items.map((r) => (
             <tr key={r.id}>
               <td><Time iso={r.reservedAt} relative /></td>
-              <td class="mono">{r.code}</td>
+              <td class="mono">
+                <a href={href(`/promocodes/${r.promocodeId}`)}>{r.code}</a>
+              </td>
+              <td class="mono wrap-any">
+                {r.buyerRef}
+                {r.buyerCompanyRef ? <div class="muted">{r.buyerCompanyRef}</div> : null}
+              </td>
               <td class="mono">{r.orderRef}</td>
               <td class="num">{money(r.discountAmount, r.currency)}</td>
               <td><Badge value={r.status} /></td>
