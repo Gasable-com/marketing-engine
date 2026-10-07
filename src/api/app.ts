@@ -7,6 +7,7 @@ import { campaigns } from './routes/campaigns.js';
 import { companies } from './routes/companies.js';
 import { consent } from './routes/consent.js';
 import { discovery, marketplace } from './routes/discovery.js';
+import { portalDiscovery } from './routes/portal-discovery.js';
 import { events } from './routes/events.js';
 import { health } from './routes/health.js';
 import { messaging } from './routes/messaging.js';
@@ -66,6 +67,7 @@ export function createApp() {
   app.route('/', messaging);
   app.route('/', companies);
   app.route('/', discovery);
+  app.route('/', portalDiscovery);
   app.route('/', promocodes);
   app.route('/', campaigns);
   app.route('/', webhookEndpoints);

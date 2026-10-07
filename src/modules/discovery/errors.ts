@@ -2,7 +2,7 @@
 export class DiscoveryError extends Error {
   constructor(
     readonly code: string,
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 404 | 409 | 429,
     message?: string,
     readonly detail?: Record<string, unknown>,
   ) {

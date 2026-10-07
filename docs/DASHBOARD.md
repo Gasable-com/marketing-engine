@@ -173,6 +173,15 @@ search is created at once with its `identified`; when it does, the form shows
 click creates the search, nothing having been searched before. If identifying
 fails, the product is searched as typed.
 
+**RFQ searches.** The new-search form has "RFQ (several products)": an RFQ
+reference and one product per line, posted to
+**`POST /internal/discovery/rfq-searches`**. The Discovery view links to the
+**RFQ searches** list (**`GET /internal/discovery/rfq-searches`**); an RFQ
+search's page (**`GET /internal/discovery/rfq-searches/:id`**) shows the RFQ,
+then each product in order with its status, counts and ranked companies (each
+line's results come from its job's results route). A product search that is one
+line of an RFQ links back to it.
+
 **Download CSV** on a search's page links to
 **`GET /internal/discovery/jobs/:id/results.csv?country`**: the engine writes
 the file, for the country selected or all of them.

@@ -45,6 +45,9 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         readRow: () => ok(fixtures.rowReading),
         identifyProduct: () => ok({ identified: null, didYouMean: null }),
+        rfqSearches: () => ok({ items: [], nextCursor: null }),
+        rfqSearch: () => ok({ rfqSearch: {}, lines: [] }),
+        createRfqSearch: () => ok({ rfqSearch: {}, lines: [] }),
         streamUrl: () => '/api/stream',
         ...overrides,
       },
@@ -204,6 +207,30 @@ describe('discovery', () => {
     expect(html).toContain('Fondu Cement (High Alumina Cement)');
     expect(html).toContain('Fundo-brand Portland Cement');
     expect(html).toContain('as typed');
+  });
+
+  it('shows an RFQ search as its products, each with its own results', async () => {
+    mockApi();
+    const { RfqSearch, RfqSearchesView } = await import('../src/views/discovery.js');
+    const html = render(
+      <RfqSearch
+        loadedAt={null}
+        detail={{
+          rfqSearch: {
+            id: 'r1', tenantId: 't', tenantName: 'Acme', rfqRef: 'RFQ-A', requesterRef: 'corp-7', side: 'suppliers',
+            countries: ['SA'], status: 'done', counts: { ranked: 3 }, createdAt: '2026-10-07T07:00:00.000Z', finishedAt: null,
+          },
+          lines: [
+            { position: 0, lineRef: 'L1', jobId: 'j1', product: 'Product A', identifiedName: 'Product A', status: 'done', counts: { ranked: 2 }, error: null },
+            { position: 1, lineRef: 'L2', jobId: 'j2', product: 'Product B', identifiedName: 'Product B', status: 'done', counts: { ranked: 1 }, error: null },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain('RFQ-A');
+    expect(html.indexOf('L1 · Product A')).toBeGreaterThan(-1);
+    expect(html.indexOf('L2 · Product B')).toBeGreaterThan(html.indexOf('L1 · Product A'));
+    expect(render(<RfqSearchesView status="" onStatus={() => {}} />)).toContain('RFQ searches');
   });
 
   it('loads a job by id', async () => {

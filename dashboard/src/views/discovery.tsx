@@ -8,6 +8,8 @@ import {
   type DiscoveryResult,
   type NewDiscoveryJob,
   type ProductIdentification,
+  type RfqSearchDetail,
+  type RfqSearchRow,
   type RowReading,
   type TenantRow,
 } from '../api.js';
@@ -70,6 +72,9 @@ export function DiscoveryView({
         <button class="primary" onClick={() => go('/discovery/new')}>
           New search
         </button>
+        <a class="button" href={href('/discovery/rfq')}>
+          RFQ searches
+        </a>
         <Stamp at={page.loadedAt} />
       </div>
 
@@ -161,6 +166,10 @@ export function NewDiscoveryView() {
   const [category, setCategory] = useState('');
   const [countries, setCountries] = useState('SA');
   const [resultLimit, setResultLimit] = useState('50');
+  // One product, or an RFQ with several: one search, results split by product.
+  const [mode, setMode] = useState<'product' | 'rfq'>('product');
+  const [rfqRef, setRfqRef] = useState('');
+  const [rfqLines, setRfqLines] = useState('');
   const [busy, setBusy] = useState<'reading' | 'identifying' | 'creating' | null>(null);
   const [ask, setAsk] = useState<ProductIdentification | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -206,6 +215,30 @@ export function NewDiscoveryView() {
         ...(extra.confirmed ? { confirmed: true } : {}),
       });
       go(`/discovery/${created.job.id}`);
+    } catch (err) {
+      setError(err);
+      setBusy(null);
+    }
+  };
+
+  /** An RFQ search: one product per line, typed or pasted. */
+  const createRfq = async () => {
+    setBusy('creating');
+    setError(null);
+    try {
+      const created = await api.createRfqSearch({
+        tenantId,
+        side: side as 'suppliers' | 'buyers',
+        ...(rfqRef.trim() ? { rfqRef: rfqRef.trim() } : {}),
+        countries: countries.split(/[\s,]+/).filter(Boolean),
+        ...(resultLimit.trim() ? { resultLimit: Number(resultLimit) } : {}),
+        lines: rfqLines
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((product, i) => ({ product, lineRef: `L${i + 1}` })),
+      });
+      go(`/discovery/rfq/${String(created.rfqSearch.id)}`);
     } catch (err) {
       setError(err);
       setBusy(null);
@@ -297,6 +330,17 @@ export function NewDiscoveryView() {
             </div>
           </div>
 
+          <div class="actions">
+            <button class={mode === 'product' ? 'primary' : ''} aria-pressed={mode === 'product'} onClick={() => setMode('product')}>
+              One product
+            </button>
+            <button class={mode === 'rfq' ? 'primary' : ''} aria-pressed={mode === 'rfq'} onClick={() => setMode('rfq')}>
+              RFQ (several products)
+            </button>
+          </div>
+
+          {mode === 'product' ? (
+            <>
           <label>
             a row from the portal's product table, with its header line if you have it
             <textarea
@@ -326,6 +370,24 @@ export function NewDiscoveryView() {
             category (optional label)
             <input value={category} onInput={(e) => setCategory((e.target as HTMLInputElement).value)} />
           </label>
+            </>
+          ) : (
+            <>
+              <label>
+                RFQ reference (optional)
+                <input value={rfqRef} placeholder="RFQ-2026-0142" onInput={(e) => setRfqRef((e.target as HTMLInputElement).value)} />
+              </label>
+              <label>
+                the RFQ's products, one per line
+                <textarea
+                  value={rfqLines}
+                  placeholder={'Calcium Hypochlorite 70% Granular - 45 kg Drum\nDiesel fuel\nLPG cylinders 12 kg'}
+                  onInput={(e) => setRfqLines((e.target as HTMLTextAreaElement).value)}
+                />
+              </label>
+            </>
+          )}
+
           <label>
             countries (ISO codes, comma or space separated)
             <input value={countries} onInput={(e) => setCountries((e.target as HTMLInputElement).value)} />
@@ -341,7 +403,11 @@ export function NewDiscoveryView() {
           </label>
 
           <div class="actions">
-            <button class="primary" onClick={search} disabled={!tenantId || !side || !product.trim() || busy !== null}>
+            <button
+              class="primary"
+              onClick={mode === 'rfq' ? createRfq : search}
+              disabled={!tenantId || !side || busy !== null || (mode === 'rfq' ? !rfqLines.trim() : !product.trim())}
+            >
               {busy === 'identifying' ? 'understanding your product…' : busy === 'creating' ? 'starting…' : 'Search'}
             </button>
           </div>
@@ -500,6 +566,12 @@ export function DiscoveryJob({
         </div>
       ) : null}
       {job.error ? <div class="banner critical">{job.error}</div> : null}
+      {job.rfqSearchId ? (
+        <div class="muted" style="margin-bottom:8px">
+          one product of <a href={href(`/discovery/rfq/${job.rfqSearchId}`)}>{job.rfqRef ?? 'an RFQ search'}</a>
+          {job.lineRef ? ` (line ${job.lineRef})` : ''}
+        </div>
+      ) : null}
 
       <div class="cards">
         <Card title="search">
@@ -893,5 +965,125 @@ function Row({ k, children }: { k: string; children: preact.ComponentChildren })
       </td>
       <td>{children}</td>
     </tr>
+  );
+}
+
+/** RFQ searches: one row per RFQ, with its products. */
+export function RfqSearchesView({ status, onStatus }: { status: string; onStatus: (s: string) => void }) {
+  const page = useAsync(() => api.rfqSearches({ status, limit: 100 }), [status], 10_000);
+  const rows: RfqSearchRow[] = page.state.status === 'ok' ? page.state.data.items : [];
+  return (
+    <>
+      <div class="head">
+        <h2>RFQ searches</h2>
+        <button class="primary" onClick={() => go('/discovery/new')}>
+          New search
+        </button>
+        <a class="button" href={href('/discovery')}>
+          all searches
+        </a>
+        <Stamp at={page.loadedAt} />
+      </div>
+      <div class="filters">
+        <Field label="status">
+          <Select value={status} options={['running', 'done', 'failed']} onChange={onStatus} />
+        </Field>
+      </div>
+      <Card>
+        {page.state.status === 'loading' ? <Loading what="RFQ searches" /> : null}
+        {page.state.status === 'error' ? <Failed error={page.state.error} what="RFQ searches" /> : null}
+        {page.state.status === 'ok' && rows.length === 0 ? <Empty what="RFQ searches yet" /> : null}
+        {rows.length > 0 ? (
+          <table>
+            <thead>
+              <tr>
+                <th>created</th>
+                <th>tenant</th>
+                <th>RFQ</th>
+                <th>products</th>
+                <th>looking for</th>
+                <th>status</th>
+                <th class="num">ranked</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={r.id}
+                  class="clickable"
+                  onClick={() => {
+                    window.location.hash = href(`/discovery/rfq/${r.id}`).slice(1);
+                  }}
+                >
+                  <td>
+                    <Time iso={r.createdAt} relative />
+                  </td>
+                  <td>{r.tenantName}</td>
+                  <td class="mono">{r.rfqRef ?? <span class="muted">—</span>}</td>
+                  <td>{(r.products ?? []).join(' · ')}</td>
+                  <td>{r.side}</td>
+                  <td>
+                    <Badge value={r.status} />
+                  </td>
+                  <td class="num">{r.counts['ranked'] === undefined ? '—' : count(r.counts['ranked'])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+      </Card>
+    </>
+  );
+}
+
+/**
+ * One RFQ search: the RFQ, then each of its products with its own status and
+ * ranked companies, in the RFQ's order.
+ */
+export function RfqSearchView({ id }: { id: string }) {
+  const [live, setLive] = useState(true);
+  const { state, loadedAt } = useAsync(() => api.rfqSearch(id), [id], live ? LIVE_MS : undefined);
+  const status = state.status === 'ok' ? state.data.rfqSearch.status : null;
+  useEffect(() => {
+    if (status) setLive(status === 'running');
+  }, [status]);
+
+  if (state.status === 'loading') return <Loading what="the RFQ search" />;
+  if (state.status === 'error') return <Failed error={state.error} what="the RFQ search" />;
+  return <RfqSearch detail={state.data} loadedAt={loadedAt} />;
+}
+
+export function RfqSearch({ detail, loadedAt }: { detail: RfqSearchDetail; loadedAt: Date | null }) {
+  const { rfqSearch: rfq, lines } = detail;
+  return (
+    <>
+      <div class="head">
+        <h2>{rfq.rfqRef ?? 'RFQ search'}</h2>
+        <Badge value={rfq.status} />
+        <span class="muted">
+          {rfq.tenantName} · looking for {rfq.side} · {rfq.countries.join(' ')} · {lines.length}{' '}
+          {lines.length === 1 ? 'product' : 'products'}
+        </span>
+        <Stamp at={loadedAt} />
+      </div>
+      {lines.map((line) => (
+        <Card
+          key={line.jobId}
+          title={`${line.lineRef ? `${line.lineRef} · ` : ''}${line.identifiedName ?? line.product}`}
+          wide
+        >
+          <div class="filters">
+            <Badge value={line.status} />
+            {line.identifiedName && line.identifiedName !== line.product ? (
+              <span class="muted">asked as “{line.product}”</span>
+            ) : null}
+            <Counts counts={line.counts} />
+            <a href={href(`/discovery/${line.jobId}`)}>open this product's search</a>
+          </div>
+          {line.error ? <div class="state error">{line.error}</div> : null}
+          <Results jobId={line.jobId} country="" version={`${line.status}:${JSON.stringify(line.counts)}`} />
+        </Card>
+      ))}
+    </>
   );
 }
