@@ -1,49 +1,41 @@
-# Brief 20b — Ask when the product is unclear
+# Brief 20b — Did you mean? Confirm the product before searching
 
-Asked for directly on 2026-10-07, after a suppliers search for "Fundo Cement" was identified as plain Portland cement under an unknown "Fundo" brand, when the operator most likely meant Ciment Fondu (a calcium aluminate cement). The search then spent its Serper credits and Claude calls on the wrong product.
+Asked for directly on 2026-10-07. A suppliers search for "Fundo Cement" was identified as plain Portland cement under an unknown "Fundo" brand, when the operator most likely meant Ciment Fondu. It then spent its search credits on the wrong product.
 
-When identification is not sure what the product is, the job asks instead of guessing, and it asks before any search is spent.
+The first version of this brief paused the search itself in a `needs_input` status. That was dropped: the search will be used from the supplier portal, and a supplier who submits a search and leaves should never find it waiting on a question. The question moves to before the search exists, when the supplier is still looking at the screen.
 
-## Identify
+## Identify first
 
-- The identify answer gains:
-  - `confidence`: `certain`, `likely` or `unsure`;
-  - `alternatives`: up to 4 distinct products the name could mean, each `{ name, nameAr, description }`, most likely first.
-- The prompt says to answer `unsure`, rather than pick one, when:
-  - the name could be a misspelling;
-  - the brand or model is unknown;
-  - the words could mean more than one distinct product.
-- When the operator has clarified (below), Claude identifies the clarified product and does not ask again.
+`POST /internal/discovery/identify { product, category?, row? }` asks Claude what the product is and stores nothing.
+- Claude's answer gains `confidence` (`certain`, `likely` or `unsure`) and up to 4 `alternatives` (`{ name, nameAr, description }`). It is `unsure` for a likely misspelling, an unknown brand or model, or words that fit more than one product.
+- The response is `{ identified, didYouMean }`:
+  - `didYouMean` is decided by the engine: `{ question, asked, best, alternatives }` when Claude is unsure and has other readings, else `null`;
+  - `identified` is `null` without the Claude bridge.
 
-## A job that needs the operator
+## Then create the search with what was confirmed
 
-- An `unsure` identification with no clarification:
-  - stops planning before `personas`;
-  - sets the job to the new status `needs_input`;
-  - emits `discovery.job.needs_input` with the alternatives.
-- No personas, tasks, Serper calls or further Claude calls happen while it waits.
-- `POST /internal/discovery/jobs/:id/clarify` with `{ "product": "Ciment Fondu (calcium aluminate cement)" }` (2–200 characters):
-  - accepted only while the job is `needs_input`, else `409 not_waiting`;
-  - stores `clarification`;
-  - sets the job back to `planning` and plans again from `identify`, with the operator's words as the product to identify;
-  - emits `discovery.job.clarified`;
-  - returns the job, as `GET` does.
-- `GET /internal/discovery/jobs/:id` gives `needsInput: { question, asked, alternatives } | null`, worked out by the engine, and `clarification`.
-- `needs_input` joins the status filters.
-- Migration `0021_discovery_clarify.sql`: the job status check gains `needs_input`, and the job gains `clarification text null` (at most 200 characters).
+`POST /internal/discovery/jobs` gains two optional fields:
+- `identified`: the accepted identification from `identify`. Planning starts from it, with `identify` already done, and does not ask again.
+- `confirmed: true`: the operator picked an alternative or chose "as typed". Planning identifies `product` and treats it as what the operator means.
+
+A job never waits for the operator. An unsure identification inside planning, for a search created without this step, goes ahead with the most likely reading.
+
+## Migration `0022_discovery_identify_first.sql`
+
+- Undoes 0021 (already applied on staging): a job left `needs_input` is closed as `failed`, the status check drops `needs_input`, and `clarification` goes.
+- Adds `product_confirmed boolean`.
+- The job detail gives `productConfirmed`.
 
 ## Dashboard
 
-On a job that needs input, the search page shows the question and Claude's alternatives as buttons, plus a box to type the product. Choosing one posts it to `clarify`, and the page carries on showing the job as it plans and runs.
+Search first asks the engine what the product is ("understanding your product…"):
+- When the engine sees no question, the search starts at once with that identification.
+- When it asks, the form shows "did you mean": the best reading, the other readings, and "search as typed". One click starts the search.
+- If identifying fails, the product is searched as typed.
 
 ## Tests
 
-- An `unsure` identification:
-  - leaves the job `needs_input`, with the alternatives in `needsInput`;
-  - creates no personas and no tasks;
-  - makes no personas call.
-- Clarifying:
-  - re-runs `identify` with the clarification in its input, then plans and runs as usual;
-  - the second identification is never asked to be unsure again.
-- A `likely` identification does not stop.
-- Clarifying a job that is not waiting is `409`; a bad body is `400`.
+- `identify` returns `didYouMean` only when unsure, never offers the best reading twice, stores nothing, refuses a bad body, and answers `{ identified: null, didYouMean: null }` without the bridge.
+- A search created with `identified` skips the `identify` call.
+- A search created `confirmed` passes `confirmed: true` to Claude and never stops.
+- A search created without the step never waits either.
