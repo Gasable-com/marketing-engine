@@ -96,6 +96,7 @@ export const personasPrompt = {
     '- "buyers": the kinds of company that would BUY and USE this product in their own business (never resellers of it).',
     'Give 3 to 6 personas, most promising first. For each: a short name, one or two sentences on why it sells or needs the product, its supply-chain roles, its sectors, web search terms (about 3 in each of the languages given, at most 12 in all), Google Maps keywords (short kinds of business, about 2 in each of the languages given, at most 8 in all), and signals: what a company website would say that confirms the persona (at most 5).',
     'Write every search term and Maps keyword the way companies in those countries write it in that language, and give its language code, one of the languages given.',
+    'Write the persona name, description, sectors and signals in English, whatever the countries: they are shown to the marketplace\'s users.',
     'Roles must be from: ' + PROFILE_ROLES.join(', ') + '. An importer is a distributor; use other when none fits.',
     'Search terms and Maps keywords must not name any country, region or city: the country is added later.',
     DATA_ONLY,
@@ -290,6 +291,7 @@ export const extractPrompt = {
     'It must operate in the country given: if the pages show it is based elsewhere with no branch there, set fit to "none" and say so in reason.',
     'Fit "strong" only when the pages show this company\'s specific link to the product: for suppliers, that it sells this product or its close equivalents; for buyers, that its own operations use this kind of product (e.g. it maintains pools, runs water or wastewater treatment, cleans with chlorine). A company that only belongs to a broad sector, with no such link on its pages, is "weak".',
     'reason: one short line on why the company fits, or why it is not saved (e.g. "a directory, not a company").',
+    'Write every claim and the reason in English, whatever language the pages are in; quotes stay exactly as the page has them.',
     DATA_ONLY,
   ].join('\n'),
   schema: {
