@@ -391,7 +391,7 @@ export function DidYouMean({
   return (
     <div class="banner">
       <p>{ask.question}</p>
-      {option(ask.best, onBest)}
+      {ask.best ? option(ask.best, onBest) : null}
       {ask.alternatives.map((a) => option(a, () => onPick(a.name)))}
       <div class="actions">
         <button disabled={busy} onClick={onAsTyped}>

@@ -404,6 +404,16 @@ describe('identifying before searching', () => {
     expect(sure.body).toMatchObject({ identified: { name: IDENTIFIED.name }, didYouMean: null });
     expect(JSON.parse(String(calls.at(-1)!.body['input']))).toMatchObject({ pastedRow: ROW });
 
+    // A "best" reading that is only the words as typed is not offered: "as typed" covers it.
+    answer = () => ({ status: 200, body: { output: { ...UNSURE, name: 'Fundo Cement' }, durationMs: 1, costUsd: 0 } });
+    const echo = await call<Record<string, unknown>>('POST', '/internal/discovery/identify', { product: 'Fundo cement' });
+    expect(echo.body).toMatchObject({
+      didYouMean: {
+        best: null,
+        alternatives: [{ name: 'Fondu Cement (High Alumina Cement)' }, { name: 'Fundo-brand Portland Cement' }],
+      },
+    });
+
     expect((await call('POST', '/internal/discovery/identify', { product: 'x' })).status).toBe(400);
     expect(await db()`select id from discovery_jobs`).toHaveLength(0);
   });

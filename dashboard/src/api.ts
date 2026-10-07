@@ -490,7 +490,8 @@ export type ProductIdentification = {
   didYouMean: {
     question: string;
     asked: string;
-    best: { name: string; nameAr: string; description: string };
+    /** Claude's most likely reading; null when that is only the words as typed. */
+    best: { name: string; nameAr: string; description: string } | null;
     alternatives: { name: string; nameAr: string; description: string }[];
   } | null;
 };

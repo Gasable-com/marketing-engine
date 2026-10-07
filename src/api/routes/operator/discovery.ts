@@ -10,6 +10,7 @@ import {
   identifyProduct,
   readRow,
 } from '../../../modules/discovery/index.js';
+import { normalizeName } from '../../../spine/registry/index.js';
 import { listQuery, page } from './shared.js';
 
 /**
@@ -119,13 +120,24 @@ discoveryOperator.post('/internal/discovery/identify', async (c) => {
 
   // The engine decides whether to ask: only when Claude was unsure and has
   // other readings to offer. Otherwise the search starts with `identified`.
+  // An option that is only the typed words again is what "as typed" already
+  // offers, so it is left out.
+  const asked = parsed.data.product;
+  const isAsked = (name: string) => normalizeName(name) === normalizeName(asked);
+  const best =
+    identified && !isAsked(identified.name)
+      ? { name: identified.name, nameAr: identified.nameAr, description: identified.description }
+      : null;
+  const others = (identified?.alternatives ?? []).filter(
+    (a) => !isAsked(a.name) && normalizeName(a.name) !== normalizeName(best?.name ?? ''),
+  );
   const didYouMean =
-    identified && identified.confidence === 'unsure' && identified.alternatives.length > 0
+    identified && identified.confidence === 'unsure' && (best || others.length > 0)
       ? {
-          question: `Did you mean one of these? "${parsed.data.product}" is not a product we can be sure of.`,
-          asked: parsed.data.product,
-          best: { name: identified.name, nameAr: identified.nameAr, description: identified.description },
-          alternatives: identified.alternatives.filter((a) => a.name !== identified.name),
+          question: `Did you mean one of these? "${asked}" is not a product we can be sure of.`,
+          asked,
+          best,
+          alternatives: others,
         }
       : null;
   return c.json({ identified, didYouMean });
