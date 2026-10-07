@@ -1065,6 +1065,12 @@ Nothing calls the network yet. Results are the tenant's own.
   "resultLimit": 50, "side": "suppliers", "row": "…the pasted row, optional…" }
 ```
 
+`identified` (optional) is the identification accepted from
+`POST /internal/discovery/identify`: planning starts from it and does not ask
+Claude again. `confirmed: true` (optional) says the operator confirmed
+`product` (a "did you mean" they picked, or "as typed"): Claude identifies it as
+written. A search never waits for the operator.
+
 `side` is `suppliers` (default: companies that sell the product) or `buyers`
 (companies that would buy and use it). With the Claude bridge configured
 (`CLAUDE_RUNNER_URL`, `CLAUDE_RUNNER_TOKEN`) the job starts `planning` with no
@@ -1104,24 +1110,25 @@ is `header` when the columns were picked by name and `guess` otherwise; or
 `400 { "error": "no_product" }` when no cell reads as a name. Nothing is
 stored.
 
-#### `POST /internal/discovery/jobs/:id/clarify`
+#### `POST /internal/discovery/identify`
 
 ```json
-{ "product": "Ciment Fondu (calcium aluminate cement)" }
+{ "product": "Fundo Cement", "category": "Building materials", "row": "…optional…" }
 ```
 
-When Claude is not sure what the product is (a likely misspelling, a brand it
-does not know, or words that could mean more than one product), the job stops
-after identification, before anything is searched, with status `needs_input`.
-This route says what the product is: one of the job's `needsInput.alternatives`,
-the operator's own words, or the original as typed. The job plans again from
-identification with those words and is not asked again. `200` with the job as
-`GET` returns it; `409 not_waiting` unless the job is `needs_input`; `400` for a
-product outside 2–200 characters; `404` for an unknown job.
+What the product is, asked before a search is created; nothing is stored.
+→ `200 { identified, didYouMean }`. `identified` is Claude's identification
+(`name`, `nameAr`, `brand`, `model`, `category`, `aliases`, `description`,
+`uses`, `confidence` — `certain`, `likely` or `unsure` — and `alternatives`), or
+`null` without the Claude bridge. `didYouMean` is decided by the engine:
+`{ question, asked, best, alternatives }` when Claude is unsure and has other
+readings, else `null`. A client shows it before searching; when it is `null` it
+creates the search at once with `identified`. `400` for a product outside 2–200
+characters.
 
 #### `GET /internal/discovery/jobs?tenantId=&status=`
 
-Newest first. `status` is `planning`, `needs_input`, `running`, `done` or `failed`. Each row:
+Newest first. `status` is `planning`, `running`, `done` or `failed`. Each row:
 `id`, `tenantId`, `tenantName`, `product`, `category`, `side`,
 `identifiedName`, `countries`, `status`, `counts`, `createdAt`, `finishedAt`.
 
@@ -1140,10 +1147,8 @@ Newest first. `status` is `planning`, `needs_input`, `running`, `done` or `faile
 The job also carries `identified` (Claude's identification: `name`, `nameAr`,
 `brand`, `model`, `category`, `aliases`, `description`, `uses`, or `null`),
 `error`, `sourceRow`, `attempts`, `deferrals`, `startedAt`, `waiting`, `live`,
-`clarification` (what the operator said the product is) and `needsInput`:
-`{ question, asked, alternatives: [{ name, nameAr, description }] }` while the
-job waits for the operator, else `null`. `identified` also carries
-`confidence` (`certain`, `likely` or `unsure`) and `alternatives`; the response has `personas` (in order: `id`, `position`, `name`,
+and `productConfirmed` (the operator confirmed the product before searching).
+`identified` also carries `confidence` and `alternatives`; the response has `personas` (in order: `id`, `position`, `name`,
 `description`, `roles`, `sectors`, `searchTerms`, `placesTerms`, `signals`);
 each task carries `deferrals` and `waiting`. `waiting` is
 `{ "reason": "usage_limit", "until": "…" }` while a Claude usage limit holds the
@@ -1308,8 +1313,6 @@ one reason.
 | `discovery.job.finished` | `jobId`, `status`, `counts`, and `error` for a job that failed in planning |
 | `discovery.job.planned` | `jobId`, `product` (the identified name), `personas` (names) |
 | `discovery.job.deferred` | `jobId`, `resetsAt` |
-| `discovery.job.needs_input` | `jobId`, `asked`, `alternatives` (names) |
-| `discovery.job.clarified` | `jobId`, `asked`, `product` |
 | `discovery.task.deferred` | `jobId`, `taskId`, `country`, `resetsAt` |
 
 All of them have `subjectType: "discovery_job"` and the job's id as `subjectId`,
@@ -1353,7 +1356,6 @@ here was later rolled back.
 `message.replied` · `message.fallback` · `company.created` · `company.updated` ·
 `company.merged` · `company.profiled` · `discovery.searched` ·
 `discovery.job.created` · `discovery.job.planned` · `discovery.job.deferred` ·
-`discovery.job.needs_input` · `discovery.job.clarified` ·
 `discovery.task.finished` · `discovery.task.failed` · `discovery.task.deferred` ·
 `discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·

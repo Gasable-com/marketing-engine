@@ -166,11 +166,12 @@ a Claude usage limit is hit the job or task says `waiting` with the time it
 resumes, as the engine reports it; the page asks again while the engine says
 the job is `live`.
 
-When Claude is not sure what the product is, the search waits (`needs_input`)
-before searching anything, and its page shows the engine's question with
-Claude's alternatives as buttons, a box for the operator's own words, and
-"search as typed"; the choice goes to
-**`POST /internal/discovery/jobs/:id/clarify`**.
+**Search** first posts to **`POST /internal/discovery/identify`**
+("understanding your product…"). When the engine returns no `didYouMean`, the
+search is created at once with its `identified`; when it does, the form shows
+"did you mean" (the best reading, the other readings, "search as typed") and one
+click creates the search, nothing having been searched before. If identifying
+fails, the product is searched as typed.
 
 **Download CSV** on a search's page links to
 **`GET /internal/discovery/jobs/:id/results.csv?country`**: the engine writes

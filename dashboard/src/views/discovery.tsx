@@ -6,6 +6,8 @@ import {
   type DiscoveryCandidate,
   type DiscoveryJobRow,
   type DiscoveryResult,
+  type NewDiscoveryJob,
+  type ProductIdentification,
   type RowReading,
   type TenantRow,
 } from '../api.js';
@@ -26,7 +28,7 @@ import {
   useAsync,
 } from '../ui/index.js';
 
-const STATUSES = ['planning', 'needs_input', 'running', 'done', 'failed'];
+const STATUSES = ['planning', 'running', 'done', 'failed'];
 
 /** How often a running job's page asks again. */
 const LIVE_MS = 3000;
@@ -159,7 +161,8 @@ export function NewDiscoveryView() {
   const [category, setCategory] = useState('');
   const [countries, setCountries] = useState('SA');
   const [resultLimit, setResultLimit] = useState('50');
-  const [busy, setBusy] = useState<'reading' | 'creating' | null>(null);
+  const [busy, setBusy] = useState<'reading' | 'identifying' | 'creating' | null>(null);
+  const [ask, setAsk] = useState<ProductIdentification | null>(null);
   const [error, setError] = useState<unknown>(null);
 
   const tenantRows: TenantRow[] = tenants.state.status === 'ok' ? tenants.state.data.items : [];
@@ -185,7 +188,8 @@ export function NewDiscoveryView() {
     }
   };
 
-  const create = async () => {
+  /** Create the search, with whatever the operator confirmed. */
+  const create = async (extra: Pick<NewDiscoveryJob, 'identified' | 'confirmed'> & { product?: string } = {}) => {
     setBusy('creating');
     setError(null);
     try {
@@ -193,17 +197,47 @@ export function NewDiscoveryView() {
         tenantId,
         side: side as 'suppliers' | 'buyers',
         ...(row.trim() ? { row } : {}),
-        product,
+        product: extra.product ?? product,
         ...(category.trim() ? { category } : {}),
         // Split as typed; the engine checks and upper-cases the codes.
         countries: countries.split(/[\s,]+/).filter(Boolean),
         ...(resultLimit.trim() ? { resultLimit: Number(resultLimit) } : {}),
+        ...(extra.identified ? { identified: extra.identified } : {}),
+        ...(extra.confirmed ? { confirmed: true } : {}),
       });
       go(`/discovery/${created.job.id}`);
     } catch (err) {
       setError(err);
       setBusy(null);
     }
+  };
+
+  /**
+   * Search: first what the product is. When the engine is sure, the search
+   * starts with its reading; when not, it asks "did you mean" here, before
+   * anything is searched. If identifying fails, the product is searched as typed.
+   */
+  const search = async () => {
+    setBusy('identifying');
+    setError(null);
+    setAsk(null);
+    let answer: ProductIdentification;
+    try {
+      answer = await api.identifyProduct({
+        product,
+        ...(category.trim() ? { category } : {}),
+        ...(row.trim() ? { row } : {}),
+      });
+    } catch {
+      await create();
+      return;
+    }
+    if (answer.didYouMean) {
+      setAsk(answer);
+      setBusy(null);
+      return;
+    }
+    await create(answer.identified ? { identified: answer.identified } : {});
   };
 
   return (
@@ -307,10 +341,20 @@ export function NewDiscoveryView() {
           </label>
 
           <div class="actions">
-            <button class="primary" onClick={create} disabled={!tenantId || !side || !product.trim() || busy !== null}>
-              {busy === 'creating' ? 'starting…' : 'Search'}
+            <button class="primary" onClick={search} disabled={!tenantId || !side || !product.trim() || busy !== null}>
+              {busy === 'identifying' ? 'understanding your product…' : busy === 'creating' ? 'starting…' : 'Search'}
             </button>
           </div>
+
+          {ask?.didYouMean ? (
+            <DidYouMean
+              ask={ask.didYouMean}
+              busy={busy !== null}
+              onBest={() => create(ask.identified ? { identified: ask.identified } : { confirmed: true })}
+              onPick={(name) => create({ product: name, confirmed: true })}
+              onAsTyped={() => create({ confirmed: true })}
+            />
+          ) : null}
 
           {error ? <WriteFailed error={error} /> : null}
         </div>
@@ -319,66 +363,42 @@ export function NewDiscoveryView() {
   );
 }
 
-/**
- * Claude could not tell what the product is: the engine's question, its
- * alternatives as buttons, and a box for the operator's own words.
- */
-function AskProduct({
-  jobId,
+/** "Did you mean": the engine's best reading, its other readings, and the words as typed. */
+export function DidYouMean({
   ask,
-  onClarified,
+  busy,
+  onBest,
+  onPick,
+  onAsTyped,
 }: {
-  jobId: string;
-  ask: NonNullable<DiscoveryJobDetail['job']['needsInput']>;
-  onClarified: () => void;
+  ask: NonNullable<ProductIdentification['didYouMean']>;
+  busy: boolean;
+  onBest: () => void;
+  onPick: (name: string) => void;
+  onAsTyped: () => void;
 }) {
-  const [typed, setTyped] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<unknown>(null);
-
-  const choose = async (product: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.clarifyDiscoveryJob(jobId, product);
-      onClarified();
-    } catch (err) {
-      setError(err);
-      setBusy(false);
-    }
-  };
-
+  const option = (o: { name: string; nameAr: string; description: string }, onClick: () => void) => (
+    <div key={o.name} class="actions">
+      <button class="primary" disabled={busy} onClick={onClick}>
+        {o.name}
+      </button>
+      <span>
+        {o.nameAr ? <span class="muted">{o.nameAr} · </span> : null}
+        {o.description}
+      </span>
+    </div>
+  );
   return (
-    <Card title="which product?" wide>
-      <div class="form">
-        <p>{ask.question}</p>
-        <p class="muted">Nothing has been searched yet. Pick one, or say what it is.</p>
-        {ask.alternatives.map((a) => (
-          <div key={a.name} class="actions">
-            <button class="primary" disabled={busy} onClick={() => choose(a.name)}>
-              {a.name}
-            </button>
-            <span>
-              {a.nameAr ? <span class="muted">{a.nameAr} · </span> : null}
-              {a.description}
-            </span>
-          </div>
-        ))}
-        <label>
-          something else
-          <input value={typed} placeholder="the product's name" onInput={(e) => setTyped((e.target as HTMLInputElement).value)} />
-        </label>
-        <div class="actions">
-          <button disabled={busy || typed.trim().length < 2} onClick={() => choose(typed)}>
-            Search for this
-          </button>
-          <button disabled={busy} onClick={() => choose(ask.asked)}>
-            Search “{ask.asked}” as typed
-          </button>
-        </div>
-        {error ? <WriteFailed error={error} /> : null}
+    <div class="banner">
+      <p>{ask.question}</p>
+      {option(ask.best, onBest)}
+      {ask.alternatives.map((a) => option(a, () => onPick(a.name)))}
+      <div class="actions">
+        <button disabled={busy} onClick={onAsTyped}>
+          Search “{ask.asked}” as typed
+        </button>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -430,7 +450,7 @@ export function DiscoveryJobView({
 }) {
   // Asked again every few seconds while the job runs, then left alone.
   const [live, setLive] = useState(true);
-  const { state, loadedAt, refresh } = useAsync(() => api.discoveryJob(id), [id], live ? LIVE_MS : undefined);
+  const { state, loadedAt } = useAsync(() => api.discoveryJob(id), [id], live ? LIVE_MS : undefined);
 
   // The engine says whether the job can still change.
   const engineLive = state.status === 'ok' ? state.data.job.live : null;
@@ -447,10 +467,6 @@ export function DiscoveryJobView({
       loadedAt={loadedAt}
       country={country}
       onCountry={onCountry}
-      onClarified={() => {
-        setLive(true);
-        refresh();
-      }}
     />
   );
 }
@@ -460,13 +476,11 @@ export function DiscoveryJob({
   loadedAt,
   country,
   onCountry,
-  onClarified = () => {},
 }: {
   detail: DiscoveryJobDetail;
   loadedAt: Date | null;
   country: string;
   onCountry: (country: string) => void;
-  onClarified?: () => void;
 }) {
   const { job, tasks, personas } = detail;
 
@@ -486,12 +500,6 @@ export function DiscoveryJob({
         </div>
       ) : null}
       {job.error ? <div class="banner critical">{job.error}</div> : null}
-      {job.needsInput ? <AskProduct jobId={job.id} ask={job.needsInput} onClarified={onClarified} /> : null}
-      {job.clarification ? (
-        <div class="muted" style="margin-bottom:8px">
-          searching for “{job.clarification}”, as clarified (asked: “{job.product}”)
-        </div>
-      ) : null}
 
       <div class="cards">
         <Card title="search">

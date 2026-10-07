@@ -74,7 +74,6 @@ const TONE: Record<string, string> = {
   skipped: 'serious',
   failed: 'critical',
   kept: 'good',
-  needs_input: 'warning',
   extracted: 'good',
   not_saved: 'serious',
   dropped: 'serious',
