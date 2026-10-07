@@ -159,8 +159,9 @@ describe('discovery', () => {
     const { NewDiscoveryView } = await import('../src/views/discovery.js');
     const html = render(<NewDiscoveryView />);
     expect(html).toContain('Read row');
+    expect(html).toContain('Find buyers');
     expect(html).toContain('textarea');
-    expect(html).toContain('ranks the companies already in the pool');
+    expect(html).toContain('ranks only the companies already in the pool');
   });
 
   it("renders a job with its tasks, a task's error and the ranked results", async () => {
@@ -169,7 +170,10 @@ describe('discovery', () => {
     const html = render(
       <DiscoveryJob detail={fixtures.discoveryJobDetail} loadedAt={null} country="" onCountry={() => {}} />,
     );
-    expect(html).toContain('ديزل');
+    expect(html).toContain('Microsilica (silica fume)');
+    expect(html).toContain('Ready-mix concrete plants');
+    expect(html).toContain('who would buy it');
+    expect(html).toContain('Waiting for the Claude usage limit');
     expect(html).toContain('finder exploded');
     expect(html).toContain('rank');
     expect(html).toContain('results');

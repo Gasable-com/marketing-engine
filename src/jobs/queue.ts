@@ -41,6 +41,8 @@ export type EnqueueOptions = {
   startAfterSeconds?: number;
   /** On a `short` queue, a second job with the same key is dropped while the first waits. */
   singletonKey?: string;
+  /** How long a started job may run before pg-boss gives up on it (default 15 minutes). */
+  expireInSeconds?: number;
 };
 
 /**
@@ -68,6 +70,7 @@ export async function enqueue(
         ? { startAfter: options.startAfterSeconds }
         : {}),
       ...(options.singletonKey !== undefined ? { singletonKey: options.singletonKey } : {}),
+      ...(options.expireInSeconds !== undefined ? { expireInSeconds: options.expireInSeconds } : {}),
     }),
   );
 }

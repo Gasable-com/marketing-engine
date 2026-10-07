@@ -14,18 +14,8 @@ export { DiscoveryError } from './errors.js';
 
 const DEFAULT_INVITE_DAYS = 14;
 
-/** What a company does in a supply chain. The column checks the same list. */
-export const PROFILE_ROLES = [
-  'manufacturer',
-  'distributor',
-  'wholesaler',
-  'retailer',
-  'installer',
-  'service_provider',
-  'transporter',
-  'other',
-] as const;
-export type ProfileRole = (typeof PROFILE_ROLES)[number];
+import { PROFILE_ROLES, type ProfileRole } from './roles.js';
+export { PROFILE_ROLES, type ProfileRole };
 
 export type ProfileRow = {
   company_id: string;

@@ -158,8 +158,17 @@ every cell with those two marked, and the operator can change either before
 searching. Countries are typed as codes; the engine validates them and every
 other field, and the form shows its refusal verbatim.
 
-Until web search is switched on (steps 18–20), a search ranks only the
-companies already in the pool, and the view says so.
+The operator chooses what the search is for: **Find suppliers** (companies
+that sell the product) or **Find buyers** (companies that would buy and use
+it). With the Claude bridge configured a search first plans: the job page shows
+the product as Claude identified it and the personas it will search for. When
+a Claude usage limit is hit the job or task says `waiting` with the time it
+resumes, as the engine reports it; the page asks again while the engine says
+the job is `live`.
+
+Until web search is switched on (steps 19–20), a suppliers search ranks only
+the companies already in the pool and a buyers search ranks nothing; the view
+says so.
 
 ## Charts
 

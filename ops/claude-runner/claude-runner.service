@@ -1,0 +1,56 @@
+# The Claude bridge for the marketing engine (staging). See README.md.
+# Install: sudo cp claude-runner.service /etc/systemd/system/
+[Unit]
+Description=Claude bridge for the marketing engine (claude -p, locked down)
+# It listens on the docker network gateway, which exists once docker is up.
+After=docker.service network-online.target
+Wants=network-online.target
+# A start that binds makes one probe call on the shared Claude seat. Five failed starts
+# within an hour leave the unit failed instead of restarting forever
+# (systemctl reset-failed claude-runner once the cause is fixed).
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# claude is authenticated in this user's HOME (~/.claude, ~/.claude.json);
+# systemd sets HOME=/home/j.adas from User=.
+User=j.adas
+Group=j.adas
+# Settings and the token. Mode 600, root-owned; never put the token here.
+EnvironmentFile=/etc/claude-runner.env
+Environment=LANG=C.UTF-8
+# Node 22 on this host is /opt/conda/bin/node (there is no /usr/bin/node).
+ExecStart=/opt/conda/bin/node /opt/claude-runner/runner.mjs
+Restart=on-failure
+RestartSec=30
+# Exit 3: the probe was refused (init lists tools or MCP servers, or no init).
+# That is configuration, so it is not restarted.
+RestartPreventExitStatus=3
+# The day's call count lives in /var/lib/claude-runner/budget.json (passed as
+# STATE_DIRECTORY), so a restart does not start the daily budget again.
+StateDirectory=claude-runner
+StateDirectoryMode=0700
+# A timed-out claude is killed by the runner; on stop, kill what is left.
+KillMode=control-group
+TimeoutStopSec=15
+
+# Hardening that keeps claude's login working. claude reads and refreshes its
+# credentials under HOME, so ProtectHome is NOT set and HOME stays writable.
+# PrivateTmp gives the runner its own /tmp, so /tmp/claude-runner is private.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

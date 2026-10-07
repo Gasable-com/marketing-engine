@@ -666,7 +666,8 @@ describe('failure', () => {
       const [midway] = await db()<{ status: string; error: string | null }[]>`
         select status, error from discovery_tasks where id = ${job!.data.taskId}
       `;
-      expect(midway).toEqual({ status: 'running', error: null });
+      // Let go between attempts, so the retry can claim it again.
+      expect(midway).toEqual({ status: 'queued', error: null });
 
       await attemptAll(job!);
 

@@ -26,7 +26,7 @@ export async function resetDb(): Promise<void> {
              webhook_deliveries, webhook_endpoints,
              campaign_recipients, campaign_runs, campaigns,
              audience_members, audiences, contacts,
-             discovery_results, discovery_tasks, discovery_jobs
+             discovery_results, discovery_tasks, discovery_personas, discovery_jobs
              restart identity cascade
   `;
   await clearSendJobs();
