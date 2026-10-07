@@ -4,13 +4,15 @@ import { db, withTenant } from '../../../db/client.js';
 import {
   MAX_COUNTRIES,
   MAX_RESULT_LIMIT,
+  MAX_RFQ_LINES,
+  createRfqSearch,
   MAX_SOURCE_ROW,
   Identified,
   createJob,
+  didYouMeanFor,
   identifyProduct,
   readRow,
 } from '../../../modules/discovery/index.js';
-import { normalizeName } from '../../../spine/registry/index.js';
 import { listQuery, page } from './shared.js';
 
 /**
@@ -89,6 +91,7 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
     select j.id::text as id, j.tenant_id::text as "tenantId", t.name as "tenantName",
            j.product, j.category, j.side, j.countries, j.status, j.counts,
            j.identified->>'name' as "identifiedName",
+           j.rfq_search_id::text as "rfqSearchId", j.requester_ref as "requesterRef",
            j.created_at as "createdAt", j.finished_at as "finishedAt"
     from discovery_jobs j
     join tenants t on t.id = j.tenant_id
@@ -117,31 +120,103 @@ discoveryOperator.post('/internal/discovery/identify', async (c) => {
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
   const identified = await identifyProduct(parsed.data);
-
-  // The engine decides whether to ask: only when Claude was unsure and has
-  // other readings to offer. Otherwise the search starts with `identified`.
-  // An option that is only the typed words again is what "as typed" already
-  // offers, so it is left out.
-  const asked = parsed.data.product;
-  const isAsked = (name: string) => normalizeName(name) === normalizeName(asked);
-  const best =
-    identified && !isAsked(identified.name)
-      ? { name: identified.name, nameAr: identified.nameAr, description: identified.description }
-      : null;
-  const others = (identified?.alternatives ?? []).filter(
-    (a) => !isAsked(a.name) && normalizeName(a.name) !== normalizeName(best?.name ?? ''),
-  );
-  const didYouMean =
-    identified && identified.confidence === 'unsure' && (best || others.length > 0)
-      ? {
-          question: `Did you mean one of these? "${asked}" is not a product we can be sure of.`,
-          asked,
-          best,
-          alternatives: others,
-        }
-      : null;
+  const didYouMean = didYouMeanFor(parsed.data.product, identified);
   return c.json({ identified, didYouMean });
 });
+
+const rfqCreateBody = z.object({
+  tenantId: z.string().uuid(),
+  rfqRef: z.string().trim().min(1).max(200).optional(),
+  side: z.enum(['suppliers', 'buyers']).default('suppliers'),
+  countries: z
+    .array(country)
+    .min(1)
+    .max(MAX_COUNTRIES)
+    .refine((list) => new Set(list).size === list.length, 'each country once'),
+  resultLimit: z.number().int().min(1).max(MAX_RESULT_LIMIT).optional(),
+  lines: z
+    .array(
+      z.object({
+        lineRef: z.string().trim().min(1).max(200).optional(),
+        product: z.string().trim().min(2).max(200),
+        category: z.string().trim().max(200).optional(),
+      }),
+    )
+    .min(1)
+    .max(MAX_RFQ_LINES),
+});
+
+/** An RFQ search for a tenant: one product search per line. Operators are not limited. */
+discoveryOperator.post('/internal/discovery/rfq-searches', async (c) => {
+  const parsed = rfqCreateBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+  const { tenantId, ...input } = parsed.data;
+  const [tenant] = await db()`select id from tenants where id = ${tenantId}`;
+  if (!tenant) return c.json({ error: 'tenant not found' }, 404);
+
+  const created = await withTenant(tenantId, (tx) => createRfqSearch(tx, { tenantId, ...input }));
+  return c.json((await oneRfqSearch(created.rfq.id))!, 201);
+});
+
+discoveryOperator.get('/internal/discovery/rfq-searches', async (c) => {
+  const q = listQuery
+    .extend({
+      cursor: z.string().uuid().optional(),
+      tenantId: z.string().uuid().optional(),
+      status: z.enum(['running', 'done', 'failed']).optional(),
+    })
+    .safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
+
+  const sql = db();
+  const rows = await sql<Record<string, unknown>[]>`
+    select q.id::text as id, q.tenant_id::text as "tenantId", t.name as "tenantName",
+           q.rfq_ref as "rfqRef", q.requester_ref as "requesterRef", q.side, q.countries,
+           q.status, q.counts, q.created_at as "createdAt", q.finished_at as "finishedAt",
+           (select count(*)::int from discovery_jobs j where j.rfq_search_id = q.id) as "lineCount",
+           (select coalesce(json_agg(j.product order by j.line_position), '[]'::json)
+              from discovery_jobs j where j.rfq_search_id = q.id) as products
+    from discovery_rfq_searches q
+    join tenants t on t.id = q.tenant_id
+    where true
+      ${q.data.tenantId ? sql`and q.tenant_id = ${q.data.tenantId}` : sql``}
+      ${q.data.status ? sql`and q.status = ${q.data.status}` : sql``}
+      ${q.data.cursor ? sql`and (q.created_at, q.id) < (select created_at, id from discovery_rfq_searches where id = ${q.data.cursor})` : sql``}
+    order by q.created_at desc, q.id desc
+    limit ${q.data.limit}
+  `;
+  return c.json(page(rows, q.data.limit));
+});
+
+discoveryOperator.get('/internal/discovery/rfq-searches/:id', async (c) => {
+  const id = z.string().uuid().safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+  const detail = await oneRfqSearch(id.data);
+  return detail ? c.json(detail) : c.json({ error: 'not found' }, 404);
+});
+
+/** An RFQ search with each line: its product search, status and counts, in line order. */
+async function oneRfqSearch(id: string) {
+  const sql = db();
+  const [rfqSearch] = await sql<Record<string, unknown>[]>`
+    select q.id::text as id, q.tenant_id::text as "tenantId", t.name as "tenantName",
+           q.rfq_ref as "rfqRef", q.requester_ref as "requesterRef", q.side, q.countries,
+           q.status, q.counts, q.created_at as "createdAt", q.finished_at as "finishedAt"
+    from discovery_rfq_searches q
+    join tenants t on t.id = q.tenant_id
+    where q.id = ${id}
+  `;
+  if (!rfqSearch) return undefined;
+  const lines = await sql<Record<string, unknown>[]>`
+    select j.line_position as position, j.line_ref as "lineRef", j.id::text as "jobId",
+           j.product, j.identified->>'name' as "identifiedName", j.status, j.counts, j.error,
+           j.created_at as "createdAt", j.finished_at as "finishedAt"
+    from discovery_jobs j
+    where j.rfq_search_id = ${id}
+    order by j.line_position
+  `;
+  return { rfqSearch, lines };
+}
 
 discoveryOperator.get('/internal/discovery/jobs/:id', async (c) => {
   const id = z.string().uuid().safeParse(c.req.param('id'));
@@ -400,6 +475,9 @@ async function oneJob(id: string) {
            j.product, j.category, j.side, j.countries, j.terms,
            j.result_limit as "resultLimit", j.status, j.counts, j.identified, j.error,
            j.product_confirmed as "productConfirmed",
+           j.requester_ref as "requesterRef", j.product_ref as "productRef",
+           j.rfq_search_id::text as "rfqSearchId", j.line_ref as "lineRef",
+           (select rfq_ref from discovery_rfq_searches q where q.id = j.rfq_search_id) as "rfqRef",
            j.source_row as "sourceRow", j.attempts, j.deferrals,
            j.deferred_until as "deferredUntil",
            j.created_at as "createdAt", j.started_at as "startedAt", j.finished_at as "finishedAt"

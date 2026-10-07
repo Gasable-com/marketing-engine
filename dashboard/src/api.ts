@@ -422,6 +422,11 @@ export type DiscoveryJobDetail = {
     live: boolean;
     /** The operator confirmed the product before the search began. */
     productConfirmed?: boolean;
+    /** Set when the search is one line of an RFQ search. */
+    rfqSearchId?: string | null;
+    rfqRef?: string | null;
+    lineRef?: string | null;
+    requesterRef?: string | null;
   };
   personas: DiscoveryPersona[];
   tasks: DiscoveryTask[];
@@ -449,6 +454,45 @@ export type DiscoveryResult = {
     profiledAt: string | null;
   } | null;
   identifiers: { type: string; value: string }[];
+};
+
+export type RfqSearchRow = {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  rfqRef: string | null;
+  requesterRef: string | null;
+  side: 'suppliers' | 'buyers';
+  countries: string[];
+  status: string;
+  counts: Record<string, number>;
+  createdAt: string;
+  finishedAt: string | null;
+  lineCount?: number;
+  products?: string[];
+};
+
+export type RfqSearchDetail = {
+  rfqSearch: RfqSearchRow;
+  lines: {
+    position: number;
+    lineRef: string | null;
+    jobId: string;
+    product: string;
+    identifiedName: string | null;
+    status: string;
+    counts: Record<string, number>;
+    error: string | null;
+  }[];
+};
+
+export type NewRfqSearch = {
+  tenantId: string;
+  rfqRef?: string;
+  side: 'suppliers' | 'buyers';
+  countries: string[];
+  resultLimit?: number;
+  lines: { product: string; lineRef?: string }[];
 };
 
 /** A company a task's searches turned up, and what triage made of it. */
@@ -552,6 +596,9 @@ export const api = {
     get<Page<DiscoveryResult>>(`/discovery/jobs/${id}/results`, params),
   discoveryCandidates: (id: string, params: Params) =>
     get<Page<DiscoveryCandidate>>(`/discovery/jobs/${id}/candidates`, params),
+  rfqSearches: (params: Params) => get<Page<RfqSearchRow>>('/discovery/rfq-searches', params),
+  rfqSearch: (id: string) => get<RfqSearchDetail>(`/discovery/rfq-searches/${id}`),
+  createRfqSearch: (body: NewRfqSearch) => send<RfqSearchDetail>('/discovery/rfq-searches', body),
   /** The engine writes the CSV; the page only links to it. */
   discoveryResultsCsvUrl: (id: string, params: Params) => `${BASE}/discovery/jobs/${id}/results.csv${toQuery(params)}`,
   createDiscoveryJob: (body: NewDiscoveryJob) => send<DiscoveryJobDetail>('/discovery/jobs', body),

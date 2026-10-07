@@ -351,6 +351,36 @@ plus trigram matching on the name, so everything it returns matched everything
 asked and scores 1.0. Companies already on the marketplace, and merged-away
 ones, are never returned.
 
+### Discovery for the portal — tenant JWT
+
+Suppliers and corporates search from the marketplace portal through these
+routes; `docs/PORTAL.md` is the full contract with examples. Every call carries
+`requesterRef`, the portal's own id for the user who asked; a search belongs to
+it, and any other `requesterRef` gets `404`. Responses never carry a company's
+contacts: a result is `{ rank, company: { id, name }, city, country, persona,
+fit, why }`, where `why` is the persona's checked evidence as `claim: "quote"`
+or the ranking reasons, never a page address.
+
+| Route | What |
+| --- | --- |
+| `POST /v1/discovery/identify` | `{ product, category? }` → `{ identified, didYouMean }` |
+| `POST /v1/discovery/searches` | `{ requesterRef, productRef?, product, category?, side, countries? = ["SA"], identified?, confirmed?, resultLimit? }` → `201 { search }` |
+| `POST /v1/discovery/rfq-searches` | `{ requesterRef, rfqRef?, side? = suppliers, countries?, lines: [{ lineRef?, productRef?, product, category? }] }` (1–20 lines) → `201 { rfqSearch }` |
+| `GET /v1/discovery/searches?requesterRef=&productRef=&status=` | the requester's searches |
+| `GET /v1/discovery/searches/:id?requesterRef=` | `{ search }` with `progress` |
+| `GET /v1/discovery/searches/:id/results?requesterRef=` | `{ search, results }` |
+| `GET /v1/discovery/rfq-searches?requesterRef=&rfqRef=` · `/:id?requesterRef=` | RFQ searches with each line's search |
+| `GET /v1/discovery/rfq-searches/:id/results?requesterRef=` | `{ rfqSearch, lines: [{ lineRef, product, identifiedAs, status, progress, results }] }` in line order |
+| `GET /v1/discovery/quota?requesterRef=` | `{ day: { used, max, resetsAt }, month: {…} }` |
+
+A search's `progress` is one of `understanding the product`, `searching`,
+`reading`, `ranking`, `done`, `failed`. Starting a search or an RFQ search over
+the `discovery.quota` rule (platform row: 5 a day, 50 a month, calendar days and
+months in Asia/Riyadh; an RFQ search counts as one) is
+`429 { error: "quota_exceeded", limit, used, max, resetsAt }`. A catalog
+product (`productRef`) searched again with the same text reuses its earlier
+identification.
+
 ### `POST /v1/companies/:id/invite` — tenant JWT
 
 ```json
@@ -1110,6 +1140,19 @@ is `header` when the columns were picked by name and `guess` otherwise; or
 `400 { "error": "no_product" }` when no cell reads as a name. Nothing is
 stored.
 
+#### RFQ searches (operator)
+
+`POST /internal/discovery/rfq-searches` `{ tenantId, rfqRef?, side?, countries,
+lines: [{ lineRef?, product, category? }] }` starts an RFQ search for a tenant
+(not counted against any quota) → `201 { rfqSearch, lines }`.
+`GET /internal/discovery/rfq-searches?tenantId=&status=` lists them with
+`rfqRef`, `requesterRef`, `products` and `lineCount`;
+`GET /internal/discovery/rfq-searches/:id` gives the RFQ search and each line
+(`position`, `lineRef`, `jobId`, `product`, `identifiedName`, `status`,
+`counts`, `error`) in order; a line's results are its job's results. A job that
+is one line of an RFQ search carries `rfqSearchId`, `rfqRef` and `lineRef`, and
+every job carries `requesterRef` and `productRef` when the portal set them.
+
 #### `POST /internal/discovery/identify`
 
 ```json
@@ -1310,7 +1353,9 @@ one reason.
 | `discovery.job.created` | `jobId`, `product`, `countries` |
 | `discovery.task.finished` | `jobId`, `taskId`, `country`, `counts` |
 | `discovery.task.failed` | `jobId`, `taskId`, `country`, `error`, `attempts` |
-| `discovery.job.finished` | `jobId`, `status`, `counts`, and `error` for a job that failed in planning |
+| `discovery.job.finished` | `jobId`, `status`, `counts`, `requesterRef`, `productRef`, `rfqSearchId`, `lineRef`, and `error` for a job that failed in planning |
+| `discovery.rfq.created` | `rfqSearchId`, `rfqRef`, `requesterRef`, `lines: [{ lineRef, jobId, product }]` |
+| `discovery.rfq.finished` | `rfqSearchId`, `rfqRef`, `requesterRef`, `status`, `lines: [{ lineRef, jobId, status, ranked }]` |
 | `discovery.job.planned` | `jobId`, `product` (the identified name), `personas` (names) |
 | `discovery.job.deferred` | `jobId`, `resetsAt` |
 | `discovery.task.deferred` | `jobId`, `taskId`, `country`, `resetsAt` |
@@ -1356,6 +1401,7 @@ here was later rolled back.
 `message.replied` · `message.fallback` · `company.created` · `company.updated` ·
 `company.merged` · `company.profiled` · `discovery.searched` ·
 `discovery.job.created` · `discovery.job.planned` · `discovery.job.deferred` ·
+`discovery.rfq.created` · `discovery.rfq.finished` ·
 `discovery.task.finished` · `discovery.task.failed` · `discovery.task.deferred` ·
 `discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·
