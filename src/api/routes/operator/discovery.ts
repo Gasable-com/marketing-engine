@@ -2,11 +2,15 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { db, withTenant } from '../../../db/client.js';
 import {
+  CountrySettingsInput,
   MAX_COUNTRIES,
   MAX_RESULT_LIMIT,
   MAX_RFQ_LINES,
   createRfqSearch,
   MAX_SOURCE_ROW,
+  countryCode,
+  listCountrySettings,
+  saveCountrySettings,
   Identified,
   createJob,
   didYouMeanFor,
@@ -23,18 +27,12 @@ import { listQuery, page } from './shared.js';
  */
 export const discoveryOperator = new Hono();
 
-const country = z
-  .string()
-  .trim()
-  .toUpperCase()
-  .regex(/^[A-Z]{2}$/, 'an ISO 3166-1 alpha-2 code');
-
 const createBody = z.object({
   tenantId: z.string().uuid(),
   product: z.string().trim().min(2).max(200),
   category: z.string().trim().max(200).optional(),
   countries: z
-    .array(country)
+    .array(countryCode)
     .min(1)
     .max(MAX_COUNTRIES)
     .refine((list) => new Set(list).size === list.length, 'each country once'),
@@ -45,6 +43,36 @@ const createBody = z.object({
   identified: Identified.optional(),
   /** The operator confirmed `product` (picked a "did you mean", or chose "as typed"). */
   confirmed: z.boolean().optional(),
+});
+
+/**
+ * How each country is searched: its discovery.country row, seeded, made by
+ * Claude the first time a job searched it, or set here. Saving replaces the
+ * row whole, and the next job in that country searches with it.
+ */
+discoveryOperator.get('/internal/discovery/countries', async (c) => {
+  const items = await db().begin((tx) => listCountrySettings(tx));
+  return c.json({ items });
+});
+
+discoveryOperator.post('/internal/discovery/countries/:code', async (c) => {
+  const code = countryCode.safeParse(c.req.param('code'));
+  if (!code.success) return c.json({ error: 'invalid country', detail: code.error.issues }, 400);
+  // A timezone matters only for a country never searched: it becomes the region's.
+  const body = z
+    .object({ settings: CountrySettingsInput, timezone: z.string().max(64).optional() })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: 'invalid body', detail: body.error.issues }, 400);
+
+  const items = await db().begin(async (tx) => {
+    await saveCountrySettings(tx, code.data, body.data.settings, {
+      by: 'operator',
+      replace: true,
+      timezone: body.data.timezone,
+    });
+    return listCountrySettings(tx);
+  });
+  return c.json({ country: items.find((i) => i.code === code.data) });
 });
 
 discoveryOperator.post('/internal/discovery/jobs', async (c) => {
@@ -129,7 +157,7 @@ const rfqCreateBody = z.object({
   rfqRef: z.string().trim().min(1).max(200).optional(),
   side: z.enum(['suppliers', 'buyers']).default('suppliers'),
   countries: z
-    .array(country)
+    .array(countryCode)
     .min(1)
     .max(MAX_COUNTRIES)
     .refine((list) => new Set(list).size === list.length, 'each country once'),
@@ -230,7 +258,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
   const id = z.string().uuid().safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'not found' }, 404);
   const q = listQuery
-    .extend({ cursor: z.string().regex(/^\d+$/).optional(), country: country.optional() })
+    .extend({ cursor: z.string().regex(/^\d+$/).optional(), country: countryCode.optional() })
     .safeParse(c.req.query());
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
 
@@ -330,7 +358,7 @@ const CSV_VALUE_COLUMNS = new Set([
 discoveryOperator.get('/internal/discovery/jobs/:id/results.csv', async (c) => {
   const id = z.string().uuid().safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'not found' }, 404);
-  const q = z.object({ country: country.optional() }).safeParse(c.req.query());
+  const q = z.object({ country: countryCode.optional() }).safeParse(c.req.query());
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
 
   const [job] = await db()<{ product: string; side: string; identified_name: string | null; created_at: Date }[]>`
@@ -390,7 +418,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/candidates', async (c) => {
   const q = listQuery
     .extend({
       cursor: z.string().uuid().optional(),
-      country: country.optional(),
+      country: countryCode.optional(),
       // One status or several, comma-separated: `kept,new`.
       status: z
         .string()

@@ -16,6 +16,14 @@ export * from './portal.js';
 export { assertQuota, quotaFor, type Quota } from './quota.js';
 export { pruneSearchCache } from './search/cache.js';
 export { setSerperFetch } from './search/serper.js';
+export {
+  CountrySettingsInput,
+  countryCode,
+  countryName,
+  listCountrySettings,
+  saveCountrySettings,
+  type CountryRow,
+} from './search/country.js';
 export { DiscoveryError } from './errors.js';
 
 const DEFAULT_INVITE_DAYS = 14;
