@@ -1143,8 +1143,8 @@ companies matching the personas' Maps keywords (kinds of company), never the
 product's own names.
 
 `product` is 2–200 characters after trimming; `category` is an optional label
-of up to 200; `countries` are 1–10 ISO 3166-1 alpha-2 codes, upper-cased, each
-once; `resultLimit` is 1–200 per country, default 50. `400` for a bad body,
+of up to 200; `countries` are 1–10 ISO 3166-1 alpha-2 codes of real countries
+(`XX` is refused), upper-cased, each once; `resultLimit` is 1–200 per country, default 50. `400` for a bad body,
 `404` for an unknown tenant. → `201 { job, tasks }` in the shape of
 `GET /internal/discovery/jobs/:id`, the job `running` and every task `queued`.
 Emits `discovery.job.created`.
@@ -1319,6 +1319,21 @@ evidence as `claim: "quote" (url)` joined with ` | `. A text cell from a web pag
 that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is
 prefixed with `'`. `404` for an unknown job.
 
+#### `GET /internal/discovery/countries` · `POST /internal/discovery/countries/:code`
+
+How each country is searched: every `discovery.country` row as `{ items: [{
+code, name, rule, enabled, settings, createdAt }] }`, by code. `name` is the
+country's English name; `rule` is the row's name, which says who made it
+(seeded, `made by Claude` or `set by operator`).
+
+`POST` with `{ settings: { gl, languages, suffix, names, cities }, timezone? }`
+replaces the country's row, or creates it, as "Search <country> (set by
+operator)". Every language is a two-letter code, listed once, at most 4; a
+suffix only in those languages; every city named in at least one of them.
+`timezone` is used only when the country is not yet a region. `400` for a bad
+code or settings → `{ country }`. The next job in that country searches with
+it.
+
 #### `GET /internal/discovery/jobs/:id/candidates?country=&status=kept,new`
 
 What the job's searches turned up, one row per company, kept first (strong fits
@@ -1330,8 +1345,9 @@ before weak), then new, then dropped; paged with `limit` and `cursor`. Each row:
 `companyId` (set when the domain or Maps id is already in the pool). `status`
 takes one status or several, comma-separated. A candidate whose phone belongs
 to a pool company is not matched by it (a phone is weak); its reason notes
-`phone matches <company>`. Only terms in one of the country's `languages` are
-searched, and a Maps listing whose own website is a blocked host is dropped
+`phone matches <company>`. Each persona term carries its language (`lang`) from
+the personas step; only terms in one of the country's `languages` are
+searched, each with that language as Serper's `hl`, and a Maps listing whose own website is a blocked host is dropped
 like the website.
 
 **How a task searches** (with `SERPER_API_KEY` and the Claude bridge both
@@ -1357,9 +1373,17 @@ Task counts from these stages: `queries`, `queries_capped`, `serper_calls`,
 
 **Rule kinds.** `discovery.country` is a value rule, one region row per
 country, read for the task's country: `{"if": [true, { gl, languages, suffix,
-names, cities }, null]}` with cities as `{ en, ar }`. Rows are seeded for `SA`
-and `AE`; a country without one searches with `gl` = its code. A country's
-`names` and `cities` are also the place names a persona's terms may not carry.
+names, cities }, null]}`. `languages` are ISO 639-1 codes; `suffix` and each
+city are keyed by language (`{ "en": "Cairo", "ar": "القاهرة" }`). Rows are
+seeded for `SA` and `AE`. Any other country gets its row the first time a job
+searches it: the job's `countries` plan stage asks Claude for its languages
+(English always added), names and main cities, and saves the row as "Search
+<country> (made by Claude)", adding the country to `regions` in the time zone
+Claude names (UTC when that zone is unknown). Later jobs reuse the row; the
+operator corrects it with `POST /internal/discovery/countries/:code`. Without
+the bridge a country with no row searches with `gl` = its code, in English. A
+country's `names` and `cities` are also the place names a persona's terms may
+not carry.
 `discovery.blocked_hosts` is a deny rule checked per candidate domain with
 context `{ host }`, e.g. `{"in": [{"var": "host"}, ["example.com"]]}`; the
 platform row lists directories, marketplaces, job boards and news sites. A
