@@ -5,10 +5,26 @@ import { emit } from '../../spine/events/index.js';
 import { ask, bridgeConfigured, reserveClaudeCall } from './claude.js';
 import { DiscoveryError, PermanentError, UsageLimitError } from './errors.js';
 import { getFinder, type FinderQuery } from './finder/index.js';
-import { Identified, Personas, identifyPrompt, personasPrompt, type Persona } from './prompts.js';
+import {
+  CountryAnswer,
+  Identified,
+  Personas,
+  countryPrompt,
+  identifyPrompt,
+  personasPrompt,
+  type Term,
+} from './prompts.js';
 import { normalizeName } from '../../spine/registry/index.js';
 import { finishRfqSearch } from './rfq.js';
-import { namesAPlace, placeWords } from './search/country.js';
+import {
+  countryName,
+  countrySettings,
+  hasCountrySettings,
+  namesAPlace,
+  placeWords,
+  saveMadeSettings,
+  settingsFromAnswer,
+} from './search/country.js';
 import { runSearch, runTriage, searchNeeds } from './search/stages.js';
 import { runReadExtract } from './extract/stage.js';
 
@@ -105,6 +121,8 @@ export type PersonaRow = {
   sectors: string[];
   search_terms: string[];
   places_terms: string[];
+  /** Term → ISO 639-1 code, as the personas step gave it. Empty before 0024. */
+  term_langs: Record<string, string>;
   signals: string[];
   created_at: Date;
 };
@@ -350,38 +368,78 @@ const identify: PlanStage = {
   },
 };
 
+/**
+ * Settings for each of the job's countries that has no discovery.country row
+ * yet, asked of Claude once and saved as the platform's row, so every later
+ * search there reuses them. A row another job saved meanwhile is kept.
+ */
+const countries: PlanStage = {
+  name: 'countries',
+  needs: bridgeConfigured,
+  async run(job) {
+    let made = 0;
+    for (const country of job.countries) {
+      if (await hasCountrySettings(job.tenant_id, country)) continue;
+      if (!(await reserveClaudeCall(job.tenant_id, job.id))) throw new PermanentError('claude budget spent');
+      const raw = await ask('country', {
+        system: countryPrompt.system,
+        schema: countryPrompt.schema,
+        input: JSON.stringify({ country, name: countryName(country) }),
+      });
+      const parsed = CountryAnswer.safeParse(raw);
+      if (!parsed.success) throw new Error('claude bridge: country answer out of shape');
+      const settings = settingsFromAnswer(country, parsed.data);
+      if (await saveMadeSettings(job.tenant_id, country, settings, parsed.data.timezone)) made += 1;
+    }
+    return { countries_made: made };
+  },
+};
+
 const personas: PlanStage = {
   name: 'personas',
   needs: bridgeConfigured,
   async run(job) {
     if (!job.identified) throw new Error('personas: the job has no identified product');
+    const settings = await Promise.all(job.countries.map((c) => countrySettings(job.tenant_id, c)));
+    const languages = [...new Set(settings.flatMap((s) => s.languages))];
+
     if (!(await reserveClaudeCall(job.tenant_id, job.id))) throw new PermanentError('claude budget spent');
     const raw = await ask('personas', {
       system: personasPrompt.system,
       schema: personasPrompt.schema,
-      input: JSON.stringify({ side: job.side, product: job.identified }),
+      input: JSON.stringify({
+        side: job.side,
+        product: job.identified,
+        countries: job.countries.map((code) => ({ code, name: countryName(code) })),
+        languages,
+      }),
     });
     const parsed = Personas.safeParse(raw);
     if (!parsed.success) throw new Error('claude bridge: personas answer out of shape');
 
-    // The country is added when searching, from its discovery.country row.
+    // Only terms some country of the job is searched in, and none naming a
+    // place: the country is added when searching, from its row.
     const places = await placeWords(job.tenant_id);
-    const clean = (terms: string[]) => [...new Set(terms.filter((t) => !namesAPlace(t, places)))];
-    const list: Persona[] = parsed.data.personas.map((p) => ({
-      ...p,
-      searchTerms: clean(p.searchTerms),
-      placesTerms: clean(p.placesTerms),
-    }));
+    const clean = (terms: Term[]) => {
+      const kept = new Map<string, string>();
+      for (const t of terms) {
+        if (languages.includes(t.lang) && !namesAPlace(t.term, places) && !kept.has(t.term)) kept.set(t.term, t.lang);
+      }
+      return kept;
+    };
+    const list = parsed.data.personas.map((p) => ({ ...p, search: clean(p.searchTerms), maps: clean(p.placesTerms) }));
 
     await withTenant(job.tenant_id, async (tx) => {
       await tx`delete from discovery_personas where job_id = ${job.id}`;
       for (const [position, p] of list.entries()) {
+        const termLangs = Object.fromEntries([...p.search, ...p.maps]);
         await tx`
           insert into discovery_personas
             (tenant_id, job_id, position, name, description, roles, sectors,
-             search_terms, places_terms, signals)
+             search_terms, places_terms, term_langs, signals)
           values (${job.tenant_id}, ${job.id}, ${position}, ${p.name}, ${p.description},
-                  ${p.roles}, ${p.sectors}, ${p.searchTerms}, ${p.placesTerms}, ${p.signals})
+                  ${p.roles}, ${p.sectors}, ${[...p.search.keys()]}, ${[...p.maps.keys()]},
+                  ${tx.json(termLangs)}, ${p.signals})
         `;
       }
     });
@@ -390,7 +448,7 @@ const personas: PlanStage = {
 };
 
 /** Run once per job, in order, before any task. */
-const PLAN_STAGES: readonly PlanStage[] = [identify, personas];
+const PLAN_STAGES: readonly PlanStage[] = [identify, countries, personas];
 
 type Outcome = 'done' | 'deferred' | 'failed' | 'skipped';
 

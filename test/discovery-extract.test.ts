@@ -6,7 +6,7 @@ import { setFirecrawlFetch, setResolver, setTransport } from '../src/modules/dis
 import { setProfile } from '../src/modules/discovery/index.js';
 import { fakeLookup, resetFakeLookup, seedFakeLookup, setCompanyLookup, upsert } from '../src/spine/registry/index.js';
 import { checkExtraction } from '../src/modules/discovery/extract/check.js';
-import { FakeBridge, FakeSerper, clearProviders, drive, ok, setProviders, type BridgeAnswer } from './fake-bridge.js';
+import { FakeBridge, FakeSerper, clearProviders, drive, ok, setProviders, terms, type BridgeAnswer } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
 const app = createApp();
@@ -34,7 +34,7 @@ const DIESEL_PERSONAS = {
   personas: [
     {
       name: 'Diesel distributors', description: 'Sell diesel in bulk.', roles: ['distributor'], sectors: ['fuel'],
-      searchTerms: ['diesel fuel supplier', 'توريد ديزل'], placesTerms: ['diesel supplier'],
+      searchTerms: terms('diesel fuel supplier', 'توريد ديزل'), placesTerms: terms('diesel supplier'),
       signals: ['bulk diesel delivery', 'serves factories'],
     },
   ],
@@ -333,7 +333,7 @@ describe('read, extract, save, rank', () => {
         personas: [
           {
             name: 'Ready-mix concrete plants', description: 'Add it to high-strength mixes.', roles: ['manufacturer'],
-            sectors: ['construction'], searchTerms: ['ready mix concrete company'], placesTerms: ['ready mix concrete'],
+            sectors: ['construction'], searchTerms: terms('ready mix concrete company'), placesTerms: terms('ready mix concrete'),
             signals: ['high strength concrete'],
           },
         ],

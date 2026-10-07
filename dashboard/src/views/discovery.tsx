@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import {
   ApiError,
   api,
+  type CountryRow,
   type DiscoveryJobDetail,
   type DiscoveryCandidate,
   type DiscoveryJobRow,
@@ -74,6 +75,9 @@ export function DiscoveryView({
         </button>
         <a class="button" href={href('/discovery/rfq')}>
           RFQ searches
+        </a>
+        <a class="button" href={href('/discovery/countries')}>
+          Countries
         </a>
         <Stamp at={page.loadedAt} />
       </div>
@@ -494,6 +498,135 @@ function Reading({ reading }: { reading: RowReading }) {
 }
 
 /** A refused write: the engine's own reason, verbatim. */
+/**
+ * How each country is searched. Rows come seeded (SA, AE), made by Claude the
+ * first time a job searches a country, or set here; saving replaces the row
+ * and the next search in that country uses it.
+ */
+export function CountriesView() {
+  const page = useAsync(() => api.discoveryCountries(), []);
+  const [editing, setEditing] = useState<string | null>(null);
+
+  return (
+    <>
+      <div class="head">
+        <h2>Countries</h2>
+        <a class="button" href={href('/discovery')}>
+          Searches
+        </a>
+        <Stamp at={page.loadedAt} />
+      </div>
+      <p class="muted">
+        A country searched for the first time gets its languages, names and cities from Claude, saved here. Correct
+        them if they are wrong; the next search in that country uses what you save.
+      </p>
+      <Card>
+        {page.state.status === 'loading' ? <Loading what="countries" /> : null}
+        {page.state.status === 'error' ? <Failed error={page.state.error} what="countries" /> : null}
+        {page.state.status === 'ok' && page.state.data.items.length === 0 ? <Empty what="countries yet" /> : null}
+        {page.state.status === 'ok' && page.state.data.items.length > 0 ? (
+          <table>
+            <thead>
+              <tr>
+                <th>country</th>
+                <th>languages</th>
+                <th>cities</th>
+                <th>row</th>
+                <th>created</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {page.state.data.items.map((row) => (
+                <CountryLine
+                  key={row.code}
+                  row={row}
+                  open={editing === row.code}
+                  onToggle={() => setEditing(editing === row.code ? null : row.code)}
+                  onSaved={() => {
+                    setEditing(null);
+                    page.refresh();
+                  }}
+                />
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+      </Card>
+    </>
+  );
+}
+
+function CountryLine({
+  row,
+  open,
+  onToggle,
+  onSaved,
+}: {
+  row: CountryRow;
+  open: boolean;
+  onToggle: () => void;
+  onSaved: () => void;
+}) {
+  const [text, setText] = useState(() => JSON.stringify(row.settings, null, 2));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.saveDiscoveryCountry(row.code, JSON.parse(text));
+      onSaved();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <tr>
+        <td>
+          <span class="mono">{row.code}</span> {row.name}
+        </td>
+        <td class="mono">{row.settings?.languages.join(' ') ?? '—'}</td>
+        <td>{row.settings?.cities.map((c) => c['en'] ?? Object.values(c)[0]).join(', ') ?? '—'}</td>
+        <td>{row.rule}</td>
+        <td>
+          <Time iso={row.createdAt} />
+        </td>
+        <td>
+          <button onClick={onToggle}>{open ? 'Close' : 'Edit'}</button>
+        </td>
+      </tr>
+      {open ? (
+        <tr>
+          <td colSpan={6}>
+            <div class="form">
+              <label>
+                settings: gl, languages (ISO 639-1), suffix and city names per language, other names
+                <textarea
+                  value={text}
+                  rows={16}
+                  onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+                />
+              </label>
+              <div class="actions">
+                <button class="primary" disabled={busy} onClick={save}>
+                  {busy ? 'saving…' : 'Save'}
+                </button>
+              </div>
+              {error ? <WriteFailed error={error} /> : null}
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  );
+}
+
 function WriteFailed({ error }: { error: unknown }) {
   const status = error instanceof ApiError ? error.status : null;
   const body = error instanceof ApiError ? error.body : { message: String(error) };

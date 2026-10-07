@@ -4,7 +4,7 @@ import { db, withTenant } from '../src/db/client.js';
 import { setProfile } from '../src/modules/discovery/index.js';
 import { createTenantRule } from '../src/spine/rules/index.js';
 import { setCompanyLookup, upsert } from '../src/spine/registry/index.js';
-import { FakeBridge, clearProviders, drive, ok, setProviders } from './fake-bridge.js';
+import { FakeBridge, clearProviders, drive, ok, setProviders, terms } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb, tokenFor } from './helpers.js';
 
 const app = createApp();
@@ -17,7 +17,7 @@ const identified = (name: string, aliases: string[]) => ({
 });
 const PERSONAS = {
   personas: [
-    { name: 'Distributors', description: 'Sell it.', roles: ['distributor'], sectors: ['fuel'], searchTerms: ['fuel distributor'], placesTerms: ['fuel station'], signals: ['bulk delivery'] },
+    { name: 'Distributors', description: 'Sell it.', roles: ['distributor'], sectors: ['fuel'], searchTerms: terms('fuel distributor'), placesTerms: terms('fuel station'), signals: ['bulk delivery'] },
   ],
 };
 
@@ -253,6 +253,10 @@ describe('a supplier or corporate searching from the portal', () => {
   it('refuses a search with no requester, and a bad RFQ', async () => {
     expect((await v1('POST', '/v1/discovery/searches', { product: 'Diesel', side: 'suppliers' })).status).toBe(400);
     expect((await v1('POST', '/v1/discovery/rfq-searches', { requesterRef: 'x', lines: [] })).status).toBe(400);
+    // A code no country has.
+    expect(
+      (await v1('POST', '/v1/discovery/searches', { requesterRef: 'x', product: 'Diesel', side: 'suppliers', countries: ['XX'] })).status,
+    ).toBe(400);
     expect((await v1('GET', '/v1/discovery/searches')).status).toBe(400);
   });
 });

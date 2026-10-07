@@ -182,6 +182,13 @@ then each product in order with its status, counts and ranked companies (each
 line's results come from its job's results route). A product search that is one
 line of an RFQ links back to it.
 
+**Countries.** The Discovery view links to **Countries**
+(**`GET /internal/discovery/countries`**): every country a search has a row
+for, with its languages, cities and who made the row (seeded, Claude or an
+operator). **Edit** opens the row's settings as JSON; **Save** posts them to
+**`POST /internal/discovery/countries/:code`**, and the engine's refusal, if
+any, is shown as it came.
+
 **Download CSV** on a search's page links to
 **`GET /internal/discovery/jobs/:id/results.csv?country`**: the engine writes
 the file, for the country selected or all of them.
