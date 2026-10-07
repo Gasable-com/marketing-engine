@@ -420,6 +420,8 @@ export type DiscoveryJobDetail = {
     waiting: Waiting;
     /** True while the job is planning or running: worth asking again. */
     live: boolean;
+    /** The operator confirmed the product before the search began. */
+    productConfirmed?: boolean;
   };
   personas: DiscoveryPersona[];
   tasks: DiscoveryTask[];
@@ -481,10 +483,25 @@ export type RowReading = {
   method: 'header' | 'guess';
 };
 
+/** Claude's reading of a product, before searching; the engine says whether to ask. */
+export type ProductIdentification = {
+  /** Opaque to the dashboard: passed back when creating the search. Null without the bridge. */
+  identified: (Identified & { confidence?: string }) | null;
+  didYouMean: {
+    question: string;
+    asked: string;
+    /** Claude's most likely reading; null when that is only the words as typed. */
+    best: { name: string; nameAr: string; description: string } | null;
+    alternatives: { name: string; nameAr: string; description: string }[];
+  } | null;
+};
+
 export type NewDiscoveryJob = {
   tenantId: string;
   side: 'suppliers' | 'buyers';
   row?: string;
+  identified?: Identified;
+  confirmed?: boolean;
   product: string;
   category?: string;
   countries: string[];
@@ -539,6 +556,8 @@ export const api = {
   discoveryResultsCsvUrl: (id: string, params: Params) => `${BASE}/discovery/jobs/${id}/results.csv${toQuery(params)}`,
   createDiscoveryJob: (body: NewDiscoveryJob) => send<DiscoveryJobDetail>('/discovery/jobs', body),
   readRow: (row: string) => send<RowReading>('/discovery/read-row', { row }),
+  identifyProduct: (body: { product: string; category?: string; row?: string }) =>
+    send<ProductIdentification>('/discovery/identify', body),
 
   /** The stream is an EventSource, not a fetch; this is just where its URL lives. */
   streamUrl: (params: Params) => `${BASE}/stream${toQuery(params)}`,

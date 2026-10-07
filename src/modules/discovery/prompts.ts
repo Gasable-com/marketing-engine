@@ -24,6 +24,8 @@ export const identifyPrompt = {
     'Say what the product is: its generic name in English and Arabic, brand and model when present, a short category, the names buyers and sellers use for it in English and Arabic (aliases, without pack sizes, quantities, prices or codes), one sentence describing it, and what it is used for.',
     'Aliases are short search phrases (1 to 4 words), most common first, at most 8.',
     'If you cannot tell what the product is, set notIdentified to true and leave the rest as empty as allowed.',
+    'confidence: "certain" when the product is clear; "likely" when there is one clear reading despite noise such as pack sizes or codes; "unsure" when the name could be a misspelling, the brand or model is not one you know, or the words could mean more than one distinct product. When unsure, do not pick one: list in alternatives the distinct products it could be (most likely first, at most 4, each with an Arabic name and one sentence), and still fill the other fields for the most likely one, naming it by its proper generic name (e.g. "Ciment Fondu (calcium aluminate cement)"), never just the words as typed.',
+    'If the input has confirmed: true, the operator has confirmed this is the product they mean: identify it as written, with confidence "certain" or "likely", and no alternatives.',
     DATA_ONLY,
   ].join('\n'),
   schema: {
@@ -39,8 +41,19 @@ export const identifyPrompt = {
       description: { type: 'string' },
       uses: { type: 'array', items: { type: 'string' }, maxItems: 6 },
       notIdentified: { type: 'boolean' },
+      confidence: { type: 'string', enum: ['certain', 'likely', 'unsure'] },
+      alternatives: {
+        type: 'array',
+        maxItems: 4,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { name: { type: 'string' }, nameAr: { type: 'string' }, description: { type: 'string' } },
+          required: ['name', 'nameAr', 'description'],
+        },
+      },
     },
-    required: ['name', 'nameAr', 'brand', 'model', 'category', 'aliases', 'description', 'uses', 'notIdentified'],
+    required: ['name', 'nameAr', 'brand', 'model', 'category', 'aliases', 'description', 'uses', 'notIdentified', 'confidence', 'alternatives'],
   },
 };
 
@@ -56,6 +69,11 @@ export const Identified = z.object({
   description: z.string().trim().max(500),
   uses: z.array(short(200)).max(6),
   notIdentified: z.boolean(),
+  confidence: z.enum(['certain', 'likely', 'unsure']).default('likely'),
+  alternatives: z
+    .array(z.object({ name: short(200), nameAr: z.string().trim().max(200), description: z.string().trim().max(500) }))
+    .max(4)
+    .default([]),
 });
 export type Identified = z.infer<typeof Identified>;
 

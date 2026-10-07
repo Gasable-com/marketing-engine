@@ -166,6 +166,13 @@ a Claude usage limit is hit the job or task says `waiting` with the time it
 resumes, as the engine reports it; the page asks again while the engine says
 the job is `live`.
 
+**Search** first posts to **`POST /internal/discovery/identify`**
+("understanding your product…"). When the engine returns no `didYouMean`, the
+search is created at once with its `identified`; when it does, the form shows
+"did you mean" (the best reading, the other readings, "search as typed") and one
+click creates the search, nothing having been searched before. If identifying
+fails, the product is searched as typed.
+
 **Download CSV** on a search's page links to
 **`GET /internal/discovery/jobs/:id/results.csv?country`**: the engine writes
 the file, for the country selected or all of them.

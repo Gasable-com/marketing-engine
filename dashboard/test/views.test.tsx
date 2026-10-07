@@ -44,6 +44,7 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         discoveryResultsCsvUrl: (id: string) => `/api/discovery/jobs/${id}/results.csv`,
         createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         readRow: () => ok(fixtures.rowReading),
+        identifyProduct: () => ok({ identified: null, didYouMean: null }),
         streamUrl: () => '/api/stream',
         ...overrides,
       },
@@ -181,6 +182,28 @@ describe('discovery', () => {
     expect(html).toContain('finder exploded');
     expect(html).toContain('rank');
     expect(html).toContain('results');
+  });
+
+  it('offers did-you-mean choices before a search starts', async () => {
+    mockApi();
+    const { DidYouMean } = await import('../src/views/discovery.js');
+    const html = render(
+      <DidYouMean
+        ask={{
+          question: 'Did you mean one of these? "Fundo Cement" is not a product we can be sure of.',
+          asked: 'Fundo Cement',
+          best: { name: 'Fondu Cement (High Alumina Cement)', nameAr: 'أسمنت فوندو', description: 'Calcium aluminate cement.' },
+          alternatives: [{ name: 'Fundo-brand Portland Cement', nameAr: 'أسمنت بورتلاند', description: 'Ordinary cement.' }],
+        }}
+        busy={false}
+        onBest={() => {}}
+        onPick={() => {}}
+        onAsTyped={() => {}}
+      />,
+    );
+    expect(html).toContain('Fondu Cement (High Alumina Cement)');
+    expect(html).toContain('Fundo-brand Portland Cement');
+    expect(html).toContain('as typed');
   });
 
   it('loads a job by id', async () => {

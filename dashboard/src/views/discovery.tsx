@@ -6,6 +6,8 @@ import {
   type DiscoveryCandidate,
   type DiscoveryJobRow,
   type DiscoveryResult,
+  type NewDiscoveryJob,
+  type ProductIdentification,
   type RowReading,
   type TenantRow,
 } from '../api.js';
@@ -159,7 +161,8 @@ export function NewDiscoveryView() {
   const [category, setCategory] = useState('');
   const [countries, setCountries] = useState('SA');
   const [resultLimit, setResultLimit] = useState('50');
-  const [busy, setBusy] = useState<'reading' | 'creating' | null>(null);
+  const [busy, setBusy] = useState<'reading' | 'identifying' | 'creating' | null>(null);
+  const [ask, setAsk] = useState<ProductIdentification | null>(null);
   const [error, setError] = useState<unknown>(null);
 
   const tenantRows: TenantRow[] = tenants.state.status === 'ok' ? tenants.state.data.items : [];
@@ -185,7 +188,8 @@ export function NewDiscoveryView() {
     }
   };
 
-  const create = async () => {
+  /** Create the search, with whatever the operator confirmed. */
+  const create = async (extra: Pick<NewDiscoveryJob, 'identified' | 'confirmed'> & { product?: string } = {}) => {
     setBusy('creating');
     setError(null);
     try {
@@ -193,17 +197,47 @@ export function NewDiscoveryView() {
         tenantId,
         side: side as 'suppliers' | 'buyers',
         ...(row.trim() ? { row } : {}),
-        product,
+        product: extra.product ?? product,
         ...(category.trim() ? { category } : {}),
         // Split as typed; the engine checks and upper-cases the codes.
         countries: countries.split(/[\s,]+/).filter(Boolean),
         ...(resultLimit.trim() ? { resultLimit: Number(resultLimit) } : {}),
+        ...(extra.identified ? { identified: extra.identified } : {}),
+        ...(extra.confirmed ? { confirmed: true } : {}),
       });
       go(`/discovery/${created.job.id}`);
     } catch (err) {
       setError(err);
       setBusy(null);
     }
+  };
+
+  /**
+   * Search: first what the product is. When the engine is sure, the search
+   * starts with its reading; when not, it asks "did you mean" here, before
+   * anything is searched. If identifying fails, the product is searched as typed.
+   */
+  const search = async () => {
+    setBusy('identifying');
+    setError(null);
+    setAsk(null);
+    let answer: ProductIdentification;
+    try {
+      answer = await api.identifyProduct({
+        product,
+        ...(category.trim() ? { category } : {}),
+        ...(row.trim() ? { row } : {}),
+      });
+    } catch {
+      await create();
+      return;
+    }
+    if (answer.didYouMean) {
+      setAsk(answer);
+      setBusy(null);
+      return;
+    }
+    await create(answer.identified ? { identified: answer.identified } : {});
   };
 
   return (
@@ -307,15 +341,64 @@ export function NewDiscoveryView() {
           </label>
 
           <div class="actions">
-            <button class="primary" onClick={create} disabled={!tenantId || !side || !product.trim() || busy !== null}>
-              {busy === 'creating' ? 'starting…' : 'Search'}
+            <button class="primary" onClick={search} disabled={!tenantId || !side || !product.trim() || busy !== null}>
+              {busy === 'identifying' ? 'understanding your product…' : busy === 'creating' ? 'starting…' : 'Search'}
             </button>
           </div>
+
+          {ask?.didYouMean ? (
+            <DidYouMean
+              ask={ask.didYouMean}
+              busy={busy !== null}
+              onBest={() => create(ask.identified ? { identified: ask.identified } : { confirmed: true })}
+              onPick={(name) => create({ product: name, confirmed: true })}
+              onAsTyped={() => create({ confirmed: true })}
+            />
+          ) : null}
 
           {error ? <WriteFailed error={error} /> : null}
         </div>
       </Card>
     </>
+  );
+}
+
+/** "Did you mean": the engine's best reading, its other readings, and the words as typed. */
+export function DidYouMean({
+  ask,
+  busy,
+  onBest,
+  onPick,
+  onAsTyped,
+}: {
+  ask: NonNullable<ProductIdentification['didYouMean']>;
+  busy: boolean;
+  onBest: () => void;
+  onPick: (name: string) => void;
+  onAsTyped: () => void;
+}) {
+  const option = (o: { name: string; nameAr: string; description: string }, onClick: () => void) => (
+    <div key={o.name} class="actions">
+      <button class="primary" disabled={busy} onClick={onClick}>
+        {o.name}
+      </button>
+      <span>
+        {o.nameAr ? <span class="muted">{o.nameAr} · </span> : null}
+        {o.description}
+      </span>
+    </div>
+  );
+  return (
+    <div class="banner">
+      <p>{ask.question}</p>
+      {ask.best ? option(ask.best, onBest) : null}
+      {ask.alternatives.map((a) => option(a, () => onPick(a.name)))}
+      <div class="actions">
+        <button disabled={busy} onClick={onAsTyped}>
+          Search “{ask.asked}” as typed
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -378,7 +461,14 @@ export function DiscoveryJobView({
   if (state.status === 'loading') return <Loading what="the search" />;
   if (state.status === 'error') return <Failed error={state.error} what="the search" />;
 
-  return <DiscoveryJob detail={state.data} loadedAt={loadedAt} country={country} onCountry={onCountry} />;
+  return (
+    <DiscoveryJob
+      detail={state.data}
+      loadedAt={loadedAt}
+      country={country}
+      onCountry={onCountry}
+    />
+  );
 }
 
 export function DiscoveryJob({

@@ -55,6 +55,8 @@ export type JobRow = {
   status: 'planning' | 'running' | 'done' | 'failed';
   counts: Counts;
   identified: Identified | null;
+  /** The operator confirmed the product before the search began, e.g. by picking a "did you mean". */
+  product_confirmed: boolean;
   stages_done: string[];
   error: string | null;
   attempts: number;
@@ -114,6 +116,13 @@ export type JobInput = {
   side?: Side | undefined;
   /** The row the operator pasted, when the search started from one. */
   row?: string | undefined;
+  /**
+   * The identification the operator accepted before searching (from
+   * identifyProduct): planning starts from it instead of asking again.
+   */
+  identified?: Identified | undefined;
+  /** The operator confirmed `product` is what they mean, e.g. a "did you mean" they picked. */
+  confirmed?: boolean | undefined;
 };
 
 /**
@@ -153,11 +162,17 @@ export async function createJob(
     );
   }
 
+  // An identification the operator already accepted is the plan's first stage, done.
+  const identified = plans && input.identified ? input.identified : null;
+  const terms = identified && side === 'suppliers' ? identified.aliases : [];
   const [job] = await tx<JobRow[]>`
     insert into discovery_jobs
-      (tenant_id, product, category, side, countries, result_limit, source_row, status)
+      (tenant_id, product, category, side, countries, result_limit, source_row, status,
+       identified, terms, stages_done, product_confirmed)
     values (${input.tenantId}, ${product}, ${category}, ${side}, ${countries}, ${resultLimit},
-            ${row}, ${plans ? 'planning' : 'running'})
+            ${row}, ${plans ? 'planning' : 'running'},
+            ${identified ? tx.json(identified as never) : null}, ${terms},
+            ${identified ? ['identify'] : []}, ${Boolean(identified) || input.confirmed === true})
     returning *
   `;
   if (!job) throw new Error('createJob wrote no job');
@@ -276,7 +291,12 @@ const identify: PlanStage = {
     const raw = await ask('identify', {
       system: identifyPrompt.system,
       schema: identifyPrompt.schema,
-      input: JSON.stringify({ product: job.product, category: job.category, pastedRow: job.source_row }),
+      input: JSON.stringify({
+        product: job.product,
+        category: job.category,
+        pastedRow: job.source_row,
+        ...(job.product_confirmed ? { confirmed: true } : {}),
+      }),
     });
     const parsed = Identified.safeParse(raw);
     if (!parsed.success) throw new Error('claude bridge: identify answer out of shape');
@@ -406,6 +426,35 @@ export async function runPlan(data: PlanJob, opts: { finalAttempt?: boolean } = 
     });
   });
   return 'done';
+}
+
+/**
+ * What the product is, asked before any search exists: the "did you mean"
+ * step. Nothing is stored and no job is charged. Null without the bridge, and
+ * the caller searches the product as typed.
+ */
+export async function identifyProduct(input: {
+  product: string;
+  category?: string | undefined;
+  row?: string | undefined;
+}): Promise<Identified | null> {
+  if (!bridgeConfigured()) return null;
+  const product = input.product.trim();
+  if (product.length < 2 || product.length > 200) {
+    throw new DiscoveryError('invalid_product', 400, 'product must be 2 to 200 characters');
+  }
+  const raw = await ask('identify', {
+    system: identifyPrompt.system,
+    schema: identifyPrompt.schema,
+    input: JSON.stringify({
+      product,
+      category: input.category?.trim() || null,
+      pastedRow: input.row?.trim() || null,
+    }),
+  });
+  const parsed = Identified.safeParse(raw);
+  if (!parsed.success) throw new Error('claude bridge: identify answer out of shape');
+  return parsed.data;
 }
 
 async function readJob(tenantId: string, jobId: string): Promise<JobRow | undefined> {

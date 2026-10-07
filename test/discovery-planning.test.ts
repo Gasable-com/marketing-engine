@@ -370,6 +370,85 @@ describe('planning', () => {
   });
 });
 
+describe('identifying before searching', () => {
+  const UNSURE = {
+    ...IDENTIFIED,
+    name: 'Fondu Cement (High Alumina Cement)',
+    brand: null,
+    model: null,
+    aliases: ['ciment fondu', 'high alumina cement'],
+    confidence: 'unsure',
+    alternatives: [
+      { name: 'Fondu Cement (High Alumina Cement)', nameAr: 'أسمنت فوندو', description: 'Calcium aluminate cement.' },
+      { name: 'Fundo-brand Portland Cement', nameAr: 'أسمنت بورتلاند', description: 'Ordinary cement under an unknown brand.' },
+    ],
+  };
+  const SURE = { ...IDENTIFIED, confidence: 'certain', alternatives: [] };
+
+  it('says what the product is, and asks "did you mean" only when Claude is unsure; nothing is stored', async () => {
+    answer = () => ({ status: 200, body: { output: UNSURE, durationMs: 1, costUsd: 0 } });
+    const unsure = await call<Record<string, unknown>>('POST', '/internal/discovery/identify', { product: 'Fundo Cement' });
+    expect(unsure.status).toBe(200);
+    expect(unsure.body).toMatchObject({
+      identified: { name: 'Fondu Cement (High Alumina Cement)', confidence: 'unsure' },
+      didYouMean: {
+        asked: 'Fundo Cement',
+        best: { name: 'Fondu Cement (High Alumina Cement)' },
+        // The best reading is not offered twice.
+        alternatives: [{ name: 'Fundo-brand Portland Cement' }],
+      },
+    });
+
+    answer = () => ({ status: 200, body: { output: SURE, durationMs: 1, costUsd: 0 } });
+    const sure = await call<Record<string, unknown>>('POST', '/internal/discovery/identify', { product: 'Microsilica MS900D  1 MT', row: ROW });
+    expect(sure.body).toMatchObject({ identified: { name: IDENTIFIED.name }, didYouMean: null });
+    expect(JSON.parse(String(calls.at(-1)!.body['input']))).toMatchObject({ pastedRow: ROW });
+
+    // A "best" reading that is only the words as typed is not offered: "as typed" covers it.
+    answer = () => ({ status: 200, body: { output: { ...UNSURE, name: 'Fundo Cement' }, durationMs: 1, costUsd: 0 } });
+    const echo = await call<Record<string, unknown>>('POST', '/internal/discovery/identify', { product: 'Fundo cement' });
+    expect(echo.body).toMatchObject({
+      didYouMean: {
+        best: null,
+        alternatives: [{ name: 'Fondu Cement (High Alumina Cement)' }, { name: 'Fundo-brand Portland Cement' }],
+      },
+    });
+
+    expect((await call('POST', '/internal/discovery/identify', { product: 'x' })).status).toBe(400);
+    expect(await db()`select id from discovery_jobs`).toHaveLength(0);
+  });
+
+  it('starts a search from the accepted identification without asking again', async () => {
+    const created = await call<{ job: Record<string, unknown> }>('POST', '/internal/discovery/jobs', {
+      tenantId: TENANT_A,
+      countries: ['SA'],
+      product: 'Fundo Cement',
+      side: 'suppliers',
+      identified: UNSURE,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.job).toMatchObject({ productConfirmed: true, identified: { name: UNSURE.name }, terms: UNSURE.aliases });
+    await drive();
+    expect(calls.map((c) => c.task)).toEqual(['personas']);
+    expect((await jobRow(String(created.body.job['id'])))['status']).toBe('done');
+  });
+
+  it('searches a picked "did you mean" as confirmed, and never stops for an unsure answer', async () => {
+    answer = (task) => (task === 'identify' ? { status: 200, body: { output: UNSURE, durationMs: 1, costUsd: 0 } } : defaultAnswer(task));
+    const picked = await createJob({ product: 'Fundo-brand Portland Cement', side: 'suppliers', confirmed: true });
+    await drive();
+    expect(JSON.parse(String(calls[0]!.body['input']))).toMatchObject({ product: 'Fundo-brand Portland Cement', confirmed: true });
+    expect(await jobRow(picked.body.job.id)).toMatchObject({ status: 'done', product_confirmed: true });
+
+    // Created without the "did you mean" step at all: still never waits.
+    calls = [];
+    const direct = await createJob({ product: 'Fundo Cement', side: 'suppliers' });
+    await drive();
+    expect(calls.map((c) => c.task)).toEqual(['identify', 'personas']);
+    expect((await jobRow(direct.body.job.id))['status']).toBe('done');
+  });
+});
+
 describe('without the bridge', () => {
   beforeEach(() => {
     delete process.env.CLAUDE_RUNNER_URL;
@@ -388,5 +467,8 @@ describe('without the bridge', () => {
     expect(suppliers.body.tasks).toHaveLength(1);
     expect(await queued('discovery.plan')).toHaveLength(0);
     expect(calls).toHaveLength(0);
+
+    const identify = await call('POST', '/internal/discovery/identify', { product: 'Microsilica' });
+    expect(identify).toMatchObject({ status: 200, body: { identified: null, didYouMean: null } });
   });
 });
