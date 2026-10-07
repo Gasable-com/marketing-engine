@@ -5,7 +5,14 @@ import { useAsync } from './ui/index.js';
 import { CampaignDetailView, CampaignsView } from './views/campaigns.js';
 import { CompaniesView } from './views/companies.js';
 import { DeliveriesView } from './views/deliveries.js';
-import { DiscoveryJobView, DiscoveryView, NewDiscoveryView, RfqSearchView, RfqSearchesView } from './views/discovery.js';
+import {
+  CountriesView,
+  DiscoveryJobView,
+  DiscoveryView,
+  NewDiscoveryView,
+  RfqSearchView,
+  RfqSearchesView,
+} from './views/discovery.js';
 import { LiveView } from './views/live.js';
 import { MessageDetailView, MessagesView, type MessageFilters } from './views/messages.js';
 import { MetricsView } from './views/metrics.js';
@@ -120,6 +127,7 @@ function View({
     return <PromocodeDetailView id={path.slice('/promocodes/'.length)} />;
   }
   if (path === '/discovery/new') return <NewDiscoveryView />;
+  if (path === '/discovery/countries') return <CountriesView />;
   if (path === '/discovery/rfq') {
     return <RfqSearchesView status={q('status')} onStatus={(status) => go('/discovery/rfq', { status })} />;
   }
