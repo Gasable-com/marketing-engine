@@ -5,6 +5,7 @@ import {
   MAX_COUNTRIES,
   MAX_RESULT_LIMIT,
   MAX_SOURCE_ROW,
+  clarifyJob,
   createJob,
   readRow,
 } from '../../../modules/discovery/index.js';
@@ -72,7 +73,7 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
     .extend({
       cursor: z.string().uuid().optional(),
       tenantId: z.string().uuid().optional(),
-      status: z.enum(['planning', 'running', 'done', 'failed']).optional(),
+      status: z.enum(['planning', 'needs_input', 'running', 'done', 'failed']).optional(),
     })
     .safeParse(c.req.query());
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
@@ -93,6 +94,22 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
     limit ${q.data.limit}
   `;
   return c.json(page(rows, q.data.limit));
+});
+
+/** The operator says what the product is, for a job that asked. */
+discoveryOperator.post('/internal/discovery/jobs/:id/clarify', async (c) => {
+  const id = z.string().uuid().safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'not found' }, 404);
+  const parsed = z
+    .object({ product: z.string().trim().min(2).max(200) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+
+  const [job] = await db()<{ tenant_id: string }[]>`select tenant_id::text from discovery_jobs where id = ${id.data}`;
+  if (!job) return c.json({ error: 'not found' }, 404);
+
+  await withTenant(job.tenant_id, (tx) => clarifyJob(tx, { jobId: id.data, product: parsed.data.product }));
+  return c.json((await oneJob(id.data))!);
 });
 
 discoveryOperator.get('/internal/discovery/jobs/:id', async (c) => {
@@ -350,7 +367,7 @@ async function oneJob(id: string) {
   const [row] = await sql<(Record<string, unknown> & { deferredUntil: Date | null })[]>`
     select j.id::text as id, j.tenant_id::text as "tenantId", t.name as "tenantName",
            j.product, j.category, j.side, j.countries, j.terms,
-           j.result_limit as "resultLimit", j.status, j.counts, j.identified, j.error,
+           j.result_limit as "resultLimit", j.status, j.counts, j.identified, j.error, j.clarification,
            j.source_row as "sourceRow", j.attempts, j.deferrals,
            j.deferred_until as "deferredUntil",
            j.created_at as "createdAt", j.started_at as "startedAt", j.finished_at as "finishedAt"
@@ -378,11 +395,23 @@ async function oneJob(id: string) {
     order by array_position(${job['countries'] as string[]}::text[], country), created_at
   `;
 
+  // What to ask when Claude could not tell what the product is.
+  const identified = job['identified'] as { alternatives?: { name: string; nameAr: string; description: string }[] } | null;
+  const needsInput =
+    job['status'] === 'needs_input'
+      ? {
+          question: `Not sure what "${String(job['product'])}" is. Which product do you mean?`,
+          asked: job['product'],
+          alternatives: identified?.alternatives ?? [],
+        }
+      : null;
+
   return {
     job: {
       ...job,
       waiting: waiting(deferredUntil),
       live: job['status'] === 'planning' || job['status'] === 'running',
+      needsInput,
     },
     personas,
     tasks: tasks.map(({ deferredUntil: until, ...task }) => ({ ...task, waiting: waiting(until) })),

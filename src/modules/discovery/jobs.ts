@@ -52,9 +52,11 @@ export type JobRow = {
   countries: string[];
   terms: string[];
   result_limit: number;
-  status: 'planning' | 'running' | 'done' | 'failed';
+  status: 'planning' | 'needs_input' | 'running' | 'done' | 'failed';
   counts: Counts;
   identified: Identified | null;
+  /** What the operator said the product is, when identification was unsure. */
+  clarification: string | null;
   stages_done: string[];
   error: string | null;
   attempts: number;
@@ -276,7 +278,12 @@ const identify: PlanStage = {
     const raw = await ask('identify', {
       system: identifyPrompt.system,
       schema: identifyPrompt.schema,
-      input: JSON.stringify({ product: job.product, category: job.category, pastedRow: job.source_row }),
+      input: JSON.stringify({
+        product: job.product,
+        category: job.category,
+        pastedRow: job.source_row,
+        ...(job.clarification ? { operatorClarification: job.clarification } : {}),
+      }),
     });
     const parsed = Identified.safeParse(raw);
     if (!parsed.success) throw new Error('claude bridge: identify answer out of shape');
@@ -337,7 +344,7 @@ const personas: PlanStage = {
 /** Run once per job, in order, before any task. */
 const PLAN_STAGES: readonly PlanStage[] = [identify, personas];
 
-type Outcome = 'done' | 'deferred' | 'failed' | 'skipped';
+type Outcome = 'done' | 'deferred' | 'failed' | 'skipped' | 'needs_input';
 
 /**
  * `discovery.plan`: run the job's plan stages, then create and queue its
@@ -370,6 +377,7 @@ export async function runPlan(data: PlanJob, opts: { finalAttempt?: boolean } = 
     try {
       const counts = await stage.run(job);
       await recordJobStage(job, stage.name, counts);
+      if (stage === identify && (await askOperatorIfUnsure(data))) return 'needs_input';
     } catch (err) {
       if (err instanceof UsageLimitError) return deferJob(job, err.resetsAt);
       if (err instanceof PermanentError || opts.finalAttempt) {
@@ -406,6 +414,68 @@ export async function runPlan(data: PlanJob, opts: { finalAttempt?: boolean } = 
     });
   });
   return 'done';
+}
+
+/**
+ * Claude was not sure what the product is and nobody has said yet: stop
+ * before anything is searched, and wait for the operator. Spending a search
+ * on a guess is what this avoids.
+ */
+async function askOperatorIfUnsure(data: PlanJob): Promise<boolean> {
+  return withTenant(data.tenantId, async (tx) => {
+    const [job] = await tx<JobRow[]>`
+      update discovery_jobs set status = 'needs_input', started_at = null
+      where id = ${data.jobId} and status = 'planning' and clarification is null
+        and identified->>'confidence' = 'unsure'
+      returning *
+    `;
+    if (!job) return false;
+    await emit(tx, {
+      tenantId: job.tenant_id,
+      type: 'discovery.job.needs_input',
+      subjectType: 'discovery_job',
+      subjectId: job.id,
+      payload: {
+        jobId: job.id,
+        asked: job.product,
+        alternatives: (job.identified?.alternatives ?? []).map((a) => a.name),
+      },
+    });
+    return true;
+  });
+}
+
+/**
+ * The operator says what the product is. The job plans again from the start,
+ * identifying what they said; it is not asked again.
+ */
+export async function clarifyJob(tx: Tx, input: { jobId: string; product: string }): Promise<JobRow> {
+  const product = input.product.trim();
+  if (product.length < 2 || product.length > 200) {
+    throw new DiscoveryError('invalid_product', 400, 'product must be 2 to 200 characters');
+  }
+  const [current] = await tx<JobRow[]>`select * from discovery_jobs where id = ${input.jobId} for update`;
+  if (!current) throw new DiscoveryError('not_found', 404, 'no such job');
+  if (current.status !== 'needs_input') {
+    throw new DiscoveryError('not_waiting', 409, `the job is ${current.status}, not waiting for the product`);
+  }
+
+  const [job] = await tx<JobRow[]>`
+    update discovery_jobs set
+      clarification = ${product}, status = 'planning', started_at = null,
+      stages_done = '{}', identified = null, terms = '{}'
+    where id = ${input.jobId}
+    returning *
+  `;
+  await enqueuePlan(tx, job!);
+  await emit(tx, {
+    tenantId: job!.tenant_id,
+    type: 'discovery.job.clarified',
+    subjectType: 'discovery_job',
+    subjectId: job!.id,
+    payload: { jobId: job!.id, asked: job!.product, product },
+  });
+  return job!;
 }
 
 async function readJob(tenantId: string, jobId: string): Promise<JobRow | undefined> {

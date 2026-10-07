@@ -370,6 +370,87 @@ describe('planning', () => {
   });
 });
 
+describe('an unclear product', () => {
+  const UNSURE = {
+    ...IDENTIFIED,
+    name: 'Cement',
+    brand: 'Fundo',
+    model: null,
+    confidence: 'unsure',
+    alternatives: [
+      { name: 'Ciment Fondu (calcium aluminate cement)', nameAr: 'أسمنت الألومينا', description: 'A refractory, rapid-hardening cement.' },
+      { name: 'Portland cement, brand Fundo', nameAr: 'أسمنت بورتلاندي', description: 'Ordinary cement under an unknown brand.' },
+    ],
+  };
+  const FONDU = { ...IDENTIFIED, name: 'Ciment Fondu (calcium aluminate cement)', aliases: ['ciment fondu', 'calcium aluminate cement'], confidence: 'certain', alternatives: [] };
+
+  it('waits for the operator before searching anything, then carries on with what they said', async () => {
+    answer = (task, n) => {
+      if (task === 'identify') return { status: 200, body: { output: n === 1 ? UNSURE : FONDU, durationMs: 1, costUsd: 0 } };
+      return defaultAnswer(task);
+    };
+    const created = await createJob({ product: 'Fundo Cement', side: 'suppliers' });
+    await drive();
+
+    const waiting = await call<{ job: Record<string, unknown> }>('GET', `/internal/discovery/jobs/${created.body.job.id}`);
+    expect(waiting.body.job).toMatchObject({
+      status: 'needs_input',
+      live: false,
+      needsInput: {
+        asked: 'Fundo Cement',
+        question: 'Not sure what "Fundo Cement" is. Which product do you mean?',
+        alternatives: [{ name: 'Ciment Fondu (calcium aluminate cement)' }, { name: 'Portland cement, brand Fundo' }],
+      },
+    });
+    // Nothing searched or planned past identification.
+    expect(calls.map((c) => c.task)).toEqual(['identify']);
+    expect(await db()`select id from discovery_tasks where job_id = ${created.body.job.id}`).toHaveLength(0);
+    expect(await db()`select id from discovery_personas where job_id = ${created.body.job.id}`).toHaveLength(0);
+    expect(await queued()).toHaveLength(0);
+
+    const clarified = await call<{ job: Record<string, unknown> }>('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, {
+      product: 'Ciment Fondu (calcium aluminate cement)',
+    });
+    expect(clarified.status).toBe(200);
+    expect(clarified.body.job).toMatchObject({ status: 'planning', clarification: 'Ciment Fondu (calcium aluminate cement)', needsInput: null });
+    await drive();
+
+    const done = await jobRow(created.body.job.id);
+    expect(done).toMatchObject({ status: 'done', terms: FONDU.aliases });
+    expect(calls.map((c) => c.task)).toEqual(['identify', 'identify', 'personas']);
+    expect(JSON.parse(String(calls[1]!.body['input']))).toMatchObject({
+      product: 'Fundo Cement',
+      operatorClarification: 'Ciment Fondu (calcium aluminate cement)',
+    });
+
+    const types = (await db()<{ type: string }[]>`select type from events where type like 'discovery.job.%' order by id`).map((e) => e.type);
+    expect(types).toEqual([
+      'discovery.job.created',
+      'discovery.job.needs_input',
+      'discovery.job.clarified',
+      'discovery.job.planned',
+      'discovery.job.finished',
+    ]);
+  });
+
+  it('does not ask twice: once clarified, an unsure answer is searched as the operator said', async () => {
+    answer = (task) => (task === 'identify' ? { status: 200, body: { output: UNSURE, durationMs: 1, costUsd: 0 } } : defaultAnswer(task));
+    const created = await createJob({ product: 'Fundo Cement', side: 'suppliers' });
+    await drive();
+    await call('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, { product: 'Fundo Cement' });
+    await drive();
+    expect((await jobRow(created.body.job.id))['status']).toBe('done');
+  });
+
+  it('refuses to clarify a job that is not waiting, an unknown job, and a bad body', async () => {
+    const created = await createJob({ product: 'Microsilica', side: 'suppliers' });
+    expect((await call('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, { product: 'x' })).status).toBe(400);
+    const busy = await call('POST', `/internal/discovery/jobs/${created.body.job.id}/clarify`, { product: 'Microsilica' });
+    expect(busy).toMatchObject({ status: 409, body: { error: 'not_waiting' } });
+    expect((await call('POST', '/internal/discovery/jobs/44444444-4444-4444-4444-444444444444/clarify', { product: 'Microsilica' })).status).toBe(404);
+  });
+});
+
 describe('without the bridge', () => {
   beforeEach(() => {
     delete process.env.CLAUDE_RUNNER_URL;
