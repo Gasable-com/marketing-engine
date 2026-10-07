@@ -36,6 +36,11 @@ const schema = z.object({
   CLAUDE_RUNNER_TOKEN: z.string().optional(),
   CLAUDE_RUNNER_TIMEOUT_MS: z.coerce.number().int().min(1000).default(120_000),
   DISCOVERY_MAX_DEFERRALS: z.coerce.number().int().min(0).default(5),
+  SERPER_API_KEY: z.string().optional(),
+  SERPER_RPS: z.coerce.number().min(0.1).max(50).default(4),
+  SEARCH_CACHE_DAYS: z.coerce.number().int().min(0).default(30),
+  DISCOVERY_MAX_QUERIES: z.coerce.number().int().min(1).default(30),
+  DISCOVERY_MAX_QUERIES_PER_JOB: z.coerce.number().int().min(1).default(60),
 });
 
 export type Env = z.infer<typeof schema>;

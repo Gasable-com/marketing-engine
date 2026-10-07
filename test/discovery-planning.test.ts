@@ -190,7 +190,12 @@ describe('planning', () => {
 
     // Until reading arrives a buyers task ranks nothing, rather than listing sellers.
     expect(detail.body.tasks).toEqual([
-      expect.objectContaining({ country: 'SA', status: 'done', counts: { skipped_rank_buyers: 1 } }),
+      expect.objectContaining({
+        country: 'SA',
+        status: 'done',
+        // No Serper key here, so search and triage are skipped too.
+        counts: { skipped_rank_buyers: 1, skipped_search: 1, skipped_triage: 1 },
+      }),
     ]);
     expect(await db()`select id from discovery_results`).toHaveLength(0);
 

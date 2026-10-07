@@ -73,6 +73,9 @@ const TONE: Record<string, string> = {
   cancelled: 'serious',
   skipped: 'serious',
   failed: 'critical',
+  kept: 'good',
+  dropped: 'serious',
+  new: 'warning',
 };
 
 export function Badge({ value }: { value: string | null }) {

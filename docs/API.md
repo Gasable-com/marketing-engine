@@ -1186,6 +1186,53 @@ Ranked best first (`rank` is 1.. within each country), paged with `limit` and
 `profile` is `null` for a company without one. `identifiers` are its
 `domain`, `email`, `gmaps` and `phone` values.
 
+#### `GET /internal/discovery/jobs/:id/candidates?country=&status=kept,new`
+
+What the job's searches turned up, one row per company, kept first (strong fits
+before weak), then new, then dropped; paged with `limit` and `cursor`. Each row:
+`id`, `country`, `kind` (`web`, `maps` or `both`), `domain`, `gmaps`, `name`,
+`url`, `phone`, `address`, `category`, `snippets` (up to five
+`{ query, title, snippet }`), `personas` (`id`, `name`), `fit` (`strong`,
+`weak` or `null`), `status` (`new`, `kept`, `dropped`), `reason` and
+`companyId` (set when the domain or Maps id is already in the pool). `status`
+takes one status or several, comma-separated. A candidate whose phone belongs
+to a pool company is not matched by it (a phone is weak); its reason notes
+`phone matches <company>`. Only terms in one of the country's `languages` are
+searched, and a Maps listing whose own website is a blocked host is dropped
+like the website.
+
+**How a task searches** (with `SERPER_API_KEY` and the Claude bridge both
+set; with either unset `search` and `triage` are skipped and counted as
+such). For each persona: every search term on the web, once as written and once
+with the country's suffix in the term's language; every Maps keyword, alone and
+with each of the country's first three cities. Personas take turns up to
+`DISCOVERY_MAX_QUERIES` per task (default 30), and no task exceeds its share of
+`DISCOVERY_MAX_QUERIES_PER_JOB` (default 60). Each query is answered from the
+shared `search_queries` cache when it was asked in the last
+`SEARCH_CACHE_DAYS` (default 30), else by Serper, throttled to `SERPER_RPS`.
+Web hits are grouped by registrable domain and Maps listings by Maps id, a
+listing joining the website it names; a hit on a shared host is dropped
+(`shared host`), and one on a host the `discovery.blocked_hosts` rules deny is
+dropped (`blocked host`). Claude then triages the rest in batches of 40 from
+their names, snippets, addresses and categories: keep (with a fit and the
+personas) or drop, with a reason. An exhausted or refused Serper key fails the
+task at once with `search provider refused: …`.
+
+Task counts from these stages: `queries`, `queries_capped`, `serper_calls`,
+`cache_hits`, `hits`, `candidates`, `dropped_shared`, `dropped_blocked`,
+`kept`, `dropped`, `triage_failed`, `claude_calls`.
+
+**Rule kinds.** `discovery.country` is a value rule, one region row per
+country, read for the task's country: `{"if": [true, { gl, languages, suffix,
+names, cities }, null]}` with cities as `{ en, ar }`. Rows are seeded for `SA`
+and `AE`; a country without one searches with `gl` = its code. A country's
+`names` and `cities` are also the place names a persona's terms may not carry.
+`discovery.blocked_hosts` is a deny rule checked per candidate domain with
+context `{ host }`, e.g. `{"in": [{"var": "host"}, ["example.com"]]}`; the
+platform row lists directories, marketplaces, job boards and news sites. A
+tenant's own rows add to it and can never lift it; they are written by step
+21's "block a domain" action (until then, as a tenant row in `rules`).
+
 **How `rank` scores.** A product term matches a profile product when the
 folded term is inside the folded product, or their trigram similarity is at
 least 0.4; only companies with a match come back, in the task's country by

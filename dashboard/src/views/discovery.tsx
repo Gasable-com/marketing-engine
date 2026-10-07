@@ -3,6 +3,7 @@ import {
   ApiError,
   api,
   type DiscoveryJobDetail,
+  type DiscoveryCandidate,
   type DiscoveryJobRow,
   type DiscoveryResult,
   type RowReading,
@@ -551,6 +552,10 @@ export function DiscoveryJob({
           {/* Asked again whenever the job moves on, so results appear as tasks finish. */}
           <Results jobId={job.id} country={country} version={`${job.status}:${JSON.stringify(job.counts)}:${tasks.map((t) => t.status).join()}`} />
         </Card>
+
+        <Card title="what the search found" wide>
+          <Candidates jobId={job.id} country={country} version={`${job.status}:${tasks.map((t) => `${t.status}${t.stage}`).join()}`} />
+        </Card>
       </div>
     </>
   );
@@ -655,6 +660,100 @@ function Results({ jobId, country, version }: { jobId: string; country: string; 
         onMore={() => setCursor(page.state.status === 'ok' ? (page.state.data.nextCursor ?? undefined) : undefined)}
       />
     </>
+  );
+}
+
+/**
+ * Every company the searches turned up, kept ones first, as the engine
+ * ordered them. Dropped ones, with why, behind a toggle.
+ */
+function Candidates({ jobId, country, version }: { jobId: string; country: string; version: string }) {
+  const [showDropped, setShowDropped] = useState(false);
+  const [rows, setRows] = useState<DiscoveryCandidate[]>([]);
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  // Kept and not-yet-triaged by default; everything with the toggle.
+  const status = showDropped ? '' : 'kept,new';
+
+  useEffect(() => setCursor(undefined), [jobId, country, status, version]);
+
+  const answer = useAsync(
+    async () => ({ used: cursor, result: await api.discoveryCandidates(jobId, { country, status, cursor, limit: 200 }) }),
+    [jobId, country, status, cursor, version],
+  );
+  useEffect(() => {
+    if (answer.state.status !== 'ok') return;
+    const { used, result } = answer.state.data;
+    setRows((current) => (used ? [...current, ...result.items] : result.items));
+  }, [answer.state]);
+  const next = answer.state.status === 'ok' ? answer.state.data.result.nextCursor : null;
+
+  return (
+    <>
+      <div class="filters">
+        <label>
+          <input
+            type="checkbox"
+            checked={showDropped}
+            onChange={(e) => setShowDropped((e.target as HTMLInputElement).checked)}
+          />{' '}
+          show everything, including what triage dropped
+        </label>
+      </div>
+      {answer.state.status === 'loading' && rows.length === 0 ? <Loading what="candidates" /> : null}
+      {answer.state.status === 'error' ? <Failed error={answer.state.error} what="candidates" /> : null}
+      {answer.state.status === 'ok' && rows.length === 0 ? <Empty what="candidates yet" /> : null}
+      {rows.length > 0 ? <CandidateTable rows={rows} /> : null}
+      <Pager cursor={next} onMore={() => setCursor(next ?? undefined)} />
+    </>
+  );
+}
+
+function CandidateTable({ rows }: { rows: DiscoveryCandidate[] }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>company</th>
+          <th>country</th>
+          <th>found on</th>
+          <th>persona</th>
+          <th>status</th>
+          <th>why</th>
+          <th>contact</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((c) => (
+          <tr key={c.id}>
+            <td>
+              {c.name}
+              {c.domain ? <div class="mono muted">{c.domain}</div> : null}
+              {c.companyId ? <div class="muted">already in the pool</div> : null}
+            </td>
+            <td class="mono">{c.country}</td>
+            <td>
+              {c.kind === 'both' ? 'web and Maps' : c.kind === 'maps' ? 'Maps' : 'web'}
+              {c.category ? <div class="muted">{c.category}</div> : null}
+            </td>
+            <td>{c.personas.length ? c.personas.map((p) => p.name).join(', ') : <span class="muted">—</span>}</td>
+            <td>
+              <Badge value={c.status} />
+              {c.fit ? <div class="muted">{c.fit} fit</div> : null}
+            </td>
+            <td>{c.reason ?? <span class="muted">—</span>}</td>
+            <td>
+              {c.phone ? <div class="mono">{c.phone}</div> : null}
+              {c.address ? <div class="muted">{c.address}</div> : null}
+              {c.url && /^https?:\/\//.test(c.url) ? (
+                <a href={c.url} target="_blank" rel="noopener noreferrer">
+                  site
+                </a>
+              ) : null}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

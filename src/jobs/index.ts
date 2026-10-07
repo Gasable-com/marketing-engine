@@ -15,6 +15,7 @@ import {
   DISCOVERY_PLAN_JOB,
   DISCOVERY_TASK_JOB,
   TASK_RETRY_LIMIT,
+  pruneSearchCache,
   runPlan,
   runTask,
   type PlanJob,
@@ -30,6 +31,7 @@ import { closeQueue, openQueue, queueStarted } from './queue.js';
 export { enqueue } from './queue.js';
 
 const NOOP = 'noop';
+const SEARCH_CACHE_PRUNE = 'discovery.cache.prune';
 const IDEMPOTENCY_CLEANUP = 'idempotency.cleanup';
 
 /**
@@ -42,7 +44,7 @@ export async function startJobs(opts: { registerWorkers?: boolean } = {}): Promi
 
   const b = await openQueue();
 
-  for (const name of [NOOP, IDEMPOTENCY_CLEANUP, SEND_JOB, EXPIRE_JOB, FANOUT_JOB, DELIVER_JOB, SWEEP_JOB]) {
+  for (const name of [NOOP, IDEMPOTENCY_CLEANUP, SEND_JOB, EXPIRE_JOB, FANOUT_JOB, DELIVER_JOB, SWEEP_JOB, SEARCH_CACHE_PRUNE]) {
     await b.createQueue(name);
   }
   // `short`: while one job with a singleton key is waiting, another with the
@@ -59,6 +61,7 @@ export async function startJobs(opts: { registerWorkers?: boolean } = {}): Promi
   await b.schedule(IDEMPOTENCY_CLEANUP, '0 * * * *');
   await b.schedule(EXPIRE_JOB, '*/5 * * * *');
   await b.schedule(SWEEP_JOB, SWEEP_CRON);
+  await b.schedule(SEARCH_CACHE_PRUNE, '30 * * * *');
 
   if (!registerWorkers) return b;
 
@@ -133,6 +136,12 @@ export async function startJobs(opts: { registerWorkers?: boolean } = {}): Promi
       const touched = await withJobLog(SWEEP_JOB, job.id, () => sweepRuns());
       if (touched.length > 0) console.log(JSON.stringify({ msg: `${SWEEP_JOB}: recovered runs`, touched }));
     }
+  });
+
+  await b.work(SEARCH_CACHE_PRUNE, async () => {
+    // Search results older than 90 days are not worth keeping, cached or not.
+    const deleted = await pruneSearchCache();
+    if (deleted > 0) console.log(`${SEARCH_CACHE_PRUNE}: deleted ${deleted} cached searches`);
   });
 
   await b.work(EXPIRE_JOB, async () => {

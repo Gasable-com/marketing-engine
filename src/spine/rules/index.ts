@@ -89,6 +89,25 @@ export async function decide<T>(tx: Tx, input: DecideInput): Promise<DecideResul
   return { value: null };
 }
 
+/**
+ * Every value the enabled rules of a value kind give, in any scope, for one
+ * context. For a kind whose rows each describe something (one row per
+ * country) and a caller that needs all of them, not the one that applies.
+ */
+export async function allValues<T>(tx: Tx, kind: string, context: Record<string, unknown>): Promise<T[]> {
+  const rows = await tx<RuleRow[]>`select * from rules where kind = ${kind} and enabled order by created_at, id`;
+  const values: T[] = [];
+  for (const rule of rows) {
+    try {
+      const value = jsonLogic.apply(asDocument(rule.document) as never, context);
+      if (value !== null && value !== undefined) values.push(value as T);
+    } catch (err) {
+      console.error(`rules: ${kind} rule ${rule.id} (${rule.name}) threw, skipping`, err);
+    }
+  }
+  return values;
+}
+
 function load(
   tx: Tx,
   input: EvaluateInput,

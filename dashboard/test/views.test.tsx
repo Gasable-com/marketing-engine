@@ -40,6 +40,7 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         discoveryJobs: () => ok({ items: fixtures.discoveryJobs, nextCursor: null }),
         discoveryJob: () => ok(fixtures.discoveryJobDetail),
         discoveryResults: () => ok({ items: fixtures.discoveryResults, nextCursor: null }),
+        discoveryCandidates: () => ok({ items: [], nextCursor: null }),
         createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         readRow: () => ok(fixtures.rowReading),
         streamUrl: () => '/api/stream',

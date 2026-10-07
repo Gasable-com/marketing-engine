@@ -166,9 +166,12 @@ a Claude usage limit is hit the job or task says `waiting` with the time it
 resumes, as the engine reports it; the page asks again while the engine says
 the job is `live`.
 
-Until web search is switched on (steps 19–20), a suppliers search ranks only
-the companies already in the pool and a buyers search ranks nothing; the view
-says so.
+**`GET /internal/discovery/jobs/:id/candidates?country&status`** is what the
+searches found, kept first, with each candidate's persona, fit and triage
+reason; the job page lists the kept ones and shows the dropped ones on request.
+
+Until reading arrives (step 20), a suppliers search ranks only the companies
+already in the pool and a buyers search ranks nothing; the view says so.
 
 ## Charts
 
