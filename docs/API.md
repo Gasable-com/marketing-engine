@@ -1101,6 +1101,27 @@ once; `resultLimit` is 1–200 per country, default 50. `400` for a bad body,
 `GET /internal/discovery/jobs/:id`, the job `running` and every task `queued`.
 Emits `discovery.job.created`.
 
+#### `POST /internal/discovery/read-row`
+
+```json
+{ "row": "ID\tProduct Name\tCategory\tPrice\n1042\tDiesel fuel 20L\tFuel\t45.00 SAR" }
+```
+
+What a row pasted from a product table says the product is, so the operator
+can check it before creating a job. Cells are split on tabs (a copied web
+table), else pipes, else commas when there are three or more. With the header
+line pasted above the row, the product and category columns are found by name
+(`product`, `name`, `item`, `اسم المنتج`, `الصنف`…; `category`, `type`,
+`الفئة`, `التصنيف`…). Without one, the product is the longest cell that reads
+as a name (not an id, code, price, quantity, date, URL, email or status) and
+the category the next such cell. A first line with no known column name still
+counts as a header when it has no digits and the row under it does; a header
+pasted alone, and a markdown table's rule line, are skipped. → `200 { product,
+category, cells, header, productIndex, categoryIndex, method }`, where `method`
+is `header` when the columns were picked by name and `guess` otherwise; or
+`400 { "error": "no_product" }` when no cell reads as a name. Nothing is
+stored.
+
 #### `GET /internal/discovery/jobs?tenantId=&status=`
 
 Newest first. `status` is `running`, `done` or `failed`. Each row: `id`,

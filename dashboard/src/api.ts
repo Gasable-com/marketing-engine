@@ -30,6 +30,17 @@ async function post<T>(path: string): Promise<T> {
   return (await res.json().catch(() => null)) as T;
 }
 
+/** A write with a JSON body. The engine validates it; a 4xx carries its reason. */
+async function send<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => null));
+  return (await res.json()) as T;
+}
+
 export type Params = Record<string, string | number | undefined>;
 
 function toQuery(params: Params): string {
@@ -342,6 +353,76 @@ export type RecipientRow = {
   messageUpdatedAt: string | null;
 };
 
+export type DiscoveryJobRow = {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  product: string;
+  category: string | null;
+  countries: string[];
+  status: string;
+  counts: Record<string, number>;
+  createdAt: string;
+  finishedAt: string | null;
+};
+
+export type DiscoveryTask = {
+  id: string;
+  country: string;
+  status: string;
+  /** The stage running now, or the last one run. */
+  stage: string | null;
+  counts: Record<string, number>;
+  error: string | null;
+  attempts: number;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type DiscoveryJobDetail = {
+  job: DiscoveryJobRow & { side: string; terms: string[]; resultLimit: number };
+  tasks: DiscoveryTask[];
+};
+
+export type DiscoveryResult = {
+  id: string;
+  rank: number;
+  /** 0..1, decided by the engine's finder. */
+  score: number;
+  reasons: string[];
+  country: string;
+  company: { id: string; name: string; country: string | null };
+  profile: {
+    products: string[];
+    roles: string[];
+    cities: string[];
+    quality: string | null;
+    profiledAt: string | null;
+  } | null;
+  identifiers: { type: string; value: string }[];
+};
+
+/** What the engine read out of a pasted row. */
+export type RowReading = {
+  product: string;
+  category: string | null;
+  cells: string[];
+  header: string[] | null;
+  productIndex: number;
+  categoryIndex: number | null;
+  /** `header`: picked by column name. `guess`: picked by what the cells look like. */
+  method: 'header' | 'guess';
+};
+
+export type NewDiscoveryJob = {
+  tenantId: string;
+  product: string;
+  category?: string;
+  countries: string[];
+  resultLimit?: number;
+};
+
 export type Metrics = {
   bucket: string;
   series: { key: string; points: [string, number][] }[];
@@ -379,6 +460,13 @@ export const api = {
   campaign: (id: string) => get<CampaignDetail>(`/campaigns/${id}`),
   recipients: (id: string, runId: string, params: Params) =>
     get<Page<RecipientRow>>(`/campaigns/${id}/runs/${runId}/recipients`, params),
+
+  discoveryJobs: (params: Params) => get<Page<DiscoveryJobRow>>('/discovery/jobs', params),
+  discoveryJob: (id: string) => get<DiscoveryJobDetail>(`/discovery/jobs/${id}`),
+  discoveryResults: (id: string, params: Params) =>
+    get<Page<DiscoveryResult>>(`/discovery/jobs/${id}/results`, params),
+  createDiscoveryJob: (body: NewDiscoveryJob) => send<DiscoveryJobDetail>('/discovery/jobs', body),
+  readRow: (row: string) => send<RowReading>('/discovery/read-row', { row }),
 
   /** The stream is an EventSource, not a fetch; this is just where its URL lives. */
   streamUrl: (params: Params) => `${BASE}/stream${toQuery(params)}`,

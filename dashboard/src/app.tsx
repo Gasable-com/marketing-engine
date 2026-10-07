@@ -5,6 +5,7 @@ import { useAsync } from './ui/index.js';
 import { CampaignDetailView, CampaignsView } from './views/campaigns.js';
 import { CompaniesView } from './views/companies.js';
 import { DeliveriesView } from './views/deliveries.js';
+import { DiscoveryJobView, DiscoveryView, NewDiscoveryView } from './views/discovery.js';
 import { LiveView } from './views/live.js';
 import { MessageDetailView, MessagesView, type MessageFilters } from './views/messages.js';
 import { MetricsView } from './views/metrics.js';
@@ -24,6 +25,7 @@ const NAV = [
   ['/deliveries', 'Deliveries'],
   ['/metrics', 'Metrics'],
   ['/companies', 'Companies'],
+  ['/discovery', 'Discovery'],
 ] as const;
 
 const STREAM_WARN_MS = 30_000;
@@ -117,6 +119,17 @@ function View({
   if (path.startsWith('/promocodes/')) {
     return <PromocodeDetailView id={path.slice('/promocodes/'.length)} />;
   }
+  if (path === '/discovery/new') return <NewDiscoveryView />;
+  if (path.startsWith('/discovery/')) {
+    const id = path.slice('/discovery/'.length);
+    return (
+      <DiscoveryJobView
+        id={id}
+        country={q('country')}
+        onCountry={(country) => go(`/discovery/${id}`, { country })}
+      />
+    );
+  }
   if (path.startsWith('/tenants/')) {
     return <TenantDetailView id={path.slice('/tenants/'.length)} />;
   }
@@ -183,6 +196,14 @@ function View({
       );
     case '/metrics':
       return <MetricsView />;
+    case '/discovery':
+      return (
+        <DiscoveryView
+          tenantId={q('tenantId')}
+          status={q('status')}
+          onFilters={(next) => go('/discovery', next)}
+        />
+      );
     case '/companies':
       return (
         <CompaniesView

@@ -7,6 +7,9 @@ import type {
   CampaignRow,
   CompanyRow,
   DeliveryRow,
+  DiscoveryJobDetail,
+  DiscoveryJobRow,
+  DiscoveryResult,
   JobRow,
   MessageDetail,
   MessageRow,
@@ -15,6 +18,7 @@ import type {
   PromocodeRow,
   RecipientRow,
   RedemptionRow,
+  RowReading,
   ScheduleRow,
   TenantDetail,
   TenantRow,
@@ -381,3 +385,78 @@ export const recipients: RecipientRow[] = [
     messageUpdatedAt: null,
   },
 ];
+
+export const discoveryJobDetail: DiscoveryJobDetail = {
+  job: {
+    id: '99999999-9999-9999-9999-999999999999',
+    tenantId: '11111111-1111-1111-1111-111111111111',
+    tenantName: 'Acme',
+    product: 'ديزل',
+    category: 'Fuel',
+    side: 'suppliers',
+    countries: ['SA', 'AE'],
+    terms: [],
+    resultLimit: 50,
+    status: 'done',
+    counts: { ranked: 2 },
+    createdAt: '2026-10-06T08:00:00.000Z',
+    finishedAt: '2026-10-06T08:00:02.000Z',
+  },
+  tasks: [
+    {
+      id: 'a',
+      country: 'SA',
+      status: 'done',
+      stage: 'rank',
+      counts: { ranked: 2 },
+      error: null,
+      attempts: 1,
+      createdAt: '2026-10-06T08:00:00.000Z',
+      startedAt: '2026-10-06T08:00:01.000Z',
+      finishedAt: '2026-10-06T08:00:02.000Z',
+    },
+    {
+      id: 'b',
+      country: 'AE',
+      status: 'failed',
+      stage: 'rank',
+      counts: {},
+      error: 'finder exploded',
+      attempts: 4,
+      createdAt: '2026-10-06T08:00:00.000Z',
+      startedAt: '2026-10-06T08:00:01.000Z',
+      finishedAt: '2026-10-06T08:00:02.000Z',
+    },
+  ],
+};
+
+export const discoveryJobs: DiscoveryJobRow[] = [discoveryJobDetail.job];
+
+export const discoveryResults: DiscoveryResult[] = [
+  {
+    id: '1',
+    rank: 1,
+    score: 0.7,
+    reasons: ['product: ديزل ~ توريد الديزل', 'profile: full', 'profiled 5 days ago'],
+    country: 'SA',
+    company: { id: 'c1', name: 'Riyadh Diesel', country: 'SA' },
+    profile: {
+      products: ['توريد الديزل'],
+      roles: ['distributor'],
+      cities: ['Riyadh'],
+      quality: 'full',
+      profiledAt: '2026-10-01T00:00:00.000Z',
+    },
+    identifiers: [{ type: 'domain', value: 'riyadh-diesel.com.sa' }],
+  },
+];
+
+export const rowReading: RowReading = {
+  product: 'Diesel fuel 20L',
+  category: 'Fuel',
+  cells: ['1042', 'Diesel fuel 20L', 'Fuel', '45.00 SAR'],
+  header: ['ID', 'Product Name', 'Category', 'Price'],
+  productIndex: 1,
+  categoryIndex: 2,
+  method: 'header',
+};

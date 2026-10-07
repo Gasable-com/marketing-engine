@@ -144,6 +144,23 @@ pass `since` as the code's `createdAt`, or the feed's 30-day default hides older
 ones. Each redemption row carries `promocodeId` and `buyerCompanyRef`, the
 client's own id for the buying company (null when it did not send one).
 
+### 9. Discovery
+
+**`GET /internal/discovery/jobs?tenantId&status`** lists searches;
+**`GET /internal/discovery/jobs/:id`** is one search with its tasks, and
+**`GET /internal/discovery/jobs/:id/results?country=`** its ranked companies,
+each with the engine's reasons, profile and identifiers.
+
+**New search** posts to **`POST /internal/discovery/jobs`**. A row pasted from
+the portal's product table goes first to **`POST /internal/discovery/read-row`**,
+which says which cells it reads as the product and category; the form shows
+every cell with those two marked, and the operator can change either before
+searching. Countries are typed as codes; the engine validates them and every
+other field, and the form shows its refusal verbatim.
+
+Until web search is switched on (steps 18–20), a search ranks only the
+companies already in the pool, and the view says so.
+
 ## Charts
 
 **`GET /internal/metrics?series=&bucket=&window=&tenantId=&groupBy=`**
@@ -166,6 +183,7 @@ need percentiles or retention, read the event log into something that is.
 | Message detail | on demand |
 | Deliveries | on demand |
 | Promocodes | on demand |
+| Discovery | list every 10s; a running search every 3s until it finishes |
 
 ## What is not here
 
