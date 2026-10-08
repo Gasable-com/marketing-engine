@@ -15,6 +15,7 @@ export * from './rfq.js';
 export * from './portal.js';
 export { assertQuota, quotaFor, type Quota } from './quota.js';
 export { pruneSearchCache } from './search/cache.js';
+export { QUERIED_EVENT, usdFor, usdPerCredit } from './search/cost.js';
 export { setSerperFetch } from './search/serper.js';
 export {
   CountrySettingsInput,
