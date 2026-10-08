@@ -1,6 +1,7 @@
-import { api, type Overview } from '../api.js';
-import { count } from '../format.js';
+import { api, type Overview, type SerperSpend, type Spend } from '../api.js';
+import { count, percent, usd } from '../format.js';
 import { href } from '../router.js';
+import { LineChart } from '../ui/chart.js';
 import { Badge, Card, Failed, Loading, Stamp, Stat, useAsync } from '../ui/index.js';
 
 const WINDOWS = ['24h', '7d', '30d'];
@@ -30,12 +31,12 @@ export function OverviewView({ window: w, onWindow }: { window: string; onWindow
 
       {state.status === 'loading' ? <Loading what="the overview" /> : null}
       {state.status === 'error' ? <Failed error={state.error} what="the overview" /> : null}
-      {state.status === 'ok' ? <Sections data={state.data} /> : null}
+      {state.status === 'ok' ? <OverviewSections data={state.data} /> : null}
     </>
   );
 }
 
-function Sections({ data }: { data: Overview }) {
+export function OverviewSections({ data }: { data: Overview }) {
   return (
     <div class="cards">
       <Card title="messages">
@@ -89,6 +90,10 @@ function Sections({ data }: { data: Overview }) {
           <Stat label="sent in window" value={count(data.campaigns.sentInWindow)} />
           <Stat label="blocked in window" value={count(data.campaigns.blockedInWindow)} />
         </div>
+      </Card>
+
+      <Card title="serper cost" wide>
+        <SerperCost data={data.serper} />
       </Card>
 
       <Card title="why messages were blocked" wide>
@@ -187,6 +192,108 @@ function Sections({ data }: { data: Overview }) {
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * What the web searches cost: the window's figures as stats, all time in a
+ * line, the spend over the window as a chart, then the window broken down.
+ * Every number is the engine's; the kind label is the only thing changed.
+ */
+function SerperCost({ data: s }: { data: SerperSpend }) {
+  const w = s.window;
+  const t = s.allTime;
+  const kind = (k: string) => (k === 'places' ? 'Maps' : k);
+  return (
+    <>
+      <div class="stat-row">
+        <Stat label="cost" value={usd(w.usd)} />
+        <Stat label="credits" value={count(w.credits)} />
+        <Stat label="searches" value={count(w.searches)} />
+        <Stat label="per search" value={usd(w.perSearch?.usd)} />
+        <Stat label="queries" value={count(w.queries)} />
+        <Stat label="per query" value={usd(w.perQuery?.usd)} />
+        <Stat label="serper calls" value={count(w.serperCalls)} />
+        <Stat label="per call" value={usd(w.perCall?.usd)} />
+        <Stat label="from cache" value={percent(w.cacheRate)} />
+      </div>
+      <p class="muted">
+        all time: {usd(t.usd)} for {count(t.credits)} credits, over {count(t.searches)} searches and{' '}
+        {count(t.queries)} queries ({count(t.serperCalls)} Serper calls, {percent(t.cacheRate)} from the cache);{' '}
+        {usd(t.perSearch?.usd)} per search, {usd(t.perQuery?.usd)} per query. Priced at {usd(s.usdPerCredit)} a
+        credit.
+      </p>
+      <LineChart
+        series={[
+          { key: 'credits', points: s.series.points.map((p) => [p.at, p.credits]) },
+          { key: 'queries', points: s.series.points.map((p) => [p.at, p.queries]) },
+        ]}
+        label="Serper credits and queries over the window"
+      />
+      <div class="cards" style="margin-top:12px">
+        <SpendTable title="by kind" rows={s.byKind.map((r) => ({ ...r, key: r.kind, label: kind(r.kind) }))} />
+        <SpendTable title="by country" rows={s.byCountry.map((r) => ({ ...r, key: r.country, label: r.country }))} />
+        <SpendTable
+          title="by tenant"
+          rows={s.byTenant.map((r) => ({ ...r, key: r.tenantId, label: r.tenantName, href: href(`/tenants/${r.tenantId}`) }))}
+        />
+        <SpendTable
+          title="costliest searches"
+          rows={s.topSearches.map((r) => ({
+            ...r,
+            key: r.jobId,
+            label: r.product,
+            sub: `${r.side} · ${r.countries.join(' ')} · ${r.tenantName}`,
+            href: href(`/discovery/${r.jobId}`),
+          }))}
+        />
+      </div>
+    </>
+  );
+}
+
+function SpendTable({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: ({ key: string; label: string; sub?: string; href?: string } & Spend)[];
+}) {
+  return (
+    <div>
+      <div class="muted" style="margin-bottom:4px">
+        {title}
+      </div>
+      {rows.length === 0 ? (
+        <span class="muted">nothing in this window</span>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th />
+              <th class="num">queries</th>
+              <th class="num">calls</th>
+              <th class="num">credits</th>
+              <th class="num">cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key}>
+                <td>
+                  {r.href ? <a href={r.href}>{r.label}</a> : r.label}
+                  {r.sub ? <div class="muted">{r.sub}</div> : null}
+                </td>
+                <td class="num">{count(r.queries)}</td>
+                <td class="num">{count(r.serperCalls)}</td>
+                <td class="num">{count(r.credits)}</td>
+                <td class="num">{usd(r.usd)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
