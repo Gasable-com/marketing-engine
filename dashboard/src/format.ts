@@ -116,3 +116,23 @@ export function cronToText(cron: string): string {
 export function count(n: number | undefined): string {
   return n === undefined ? '—' : n.toLocaleString();
 }
+
+/**
+ * US dollars as the engine prices Serper credits: a credit is a tenth of a
+ * cent, so up to four decimals, never fewer than two.
+ */
+export function usd(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(n);
+}
+
+/** A ratio the engine worked out, as a whole percentage. */
+export function percent(ratio: number | null | undefined): string {
+  if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return '—';
+  return `${Math.round(ratio * 100)}%`;
+}

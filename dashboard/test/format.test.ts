@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { count, cronToText, discount, money, relativeTime } from '../src/format.js';
+import { count, cronToText, discount, money, percent, relativeTime, usd } from '../src/format.js';
 
 describe('money', () => {
   it('reads minor units, not major ones', () => {
@@ -19,6 +19,30 @@ describe('money', () => {
 
   it('says so rather than guessing when the value is not a number', () => {
     expect(money('not a number', 'SAR')).toBe('—');
+  });
+});
+
+describe('usd', () => {
+  it('shows a tenth of a cent without rounding it away', () => {
+    expect(usd(0.001)).toContain('0.001');
+    expect(usd(0.0165)).toContain('0.0165');
+  });
+
+  it('reads whole dollars with two decimals', () => {
+    expect(usd(2)).toContain('2.00');
+  });
+
+  it('says so rather than guessing when there is no figure', () => {
+    expect(usd(null)).toBe('—');
+    expect(usd(undefined)).toBe('—');
+  });
+});
+
+describe('percent', () => {
+  it('rounds a ratio to a whole percentage', () => {
+    expect(percent(0.354)).toBe('35%');
+    expect(percent(0)).toBe('0%');
+    expect(percent(null)).toBe('—');
   });
 });
 

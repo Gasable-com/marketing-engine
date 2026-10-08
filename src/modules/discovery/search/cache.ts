@@ -1,6 +1,6 @@
 import { db } from '../../../db/client.js';
 import { env } from '../../../env.js';
-import { searchPlaces, searchWeb, type PlaceHit, type SearchQuery, type WebHit } from './serper.js';
+import { searchPlaces, searchWeb, type Answer, type PlaceHit, type SearchQuery, type WebHit } from './serper.js';
 
 /**
  * search_queries: Serper's answers, trimmed, shared by every tenant. A query
@@ -12,12 +12,17 @@ import { searchPlaces, searchWeb, type PlaceHit, type SearchQuery, type WebHit }
 
 const PROVIDER = 'serper';
 
-export type Cached<T> = { hits: T[]; fromCache: boolean };
+export type Cached<T> = {
+  hits: T[];
+  fromCache: boolean;
+  /** Serper's credits for this answer: none when the cache had it. */
+  credits: number;
+};
 
 async function cached<T>(
   kind: 'web' | 'places',
   query: SearchQuery,
-  fetchHits: () => Promise<T[]>,
+  fetchHits: () => Promise<Answer<T>>,
 ): Promise<Cached<T>> {
   const page = query.page ?? 1;
   const sql = db();
@@ -27,9 +32,9 @@ async function cached<T>(
       and gl = ${query.gl} and hl = ${query.hl} and page = ${page}
       and fetched_at > now() - make_interval(days => ${env().SEARCH_CACHE_DAYS})
   `;
-  if (hit) return { hits: hit.results, fromCache: true };
+  if (hit) return { hits: hit.results, fromCache: true, credits: 0 };
 
-  const hits = await fetchHits();
+  const { hits, credits } = await fetchHits();
   await sql`
     insert into search_queries (provider, kind, q, gl, hl, page, results, result_count)
     values (${PROVIDER}, ${kind}, ${query.q}, ${query.gl}, ${query.hl}, ${page},
@@ -37,7 +42,7 @@ async function cached<T>(
     on conflict (provider, kind, q, gl, hl, page) do update set
       results = excluded.results, result_count = excluded.result_count, fetched_at = now()
   `;
-  return { hits, fromCache: false };
+  return { hits, fromCache: false, credits };
 }
 
 export function webSearch(query: SearchQuery): Promise<Cached<WebHit>> {

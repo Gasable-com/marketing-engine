@@ -41,6 +41,7 @@ function mockApi(overrides: Record<string, unknown> = {}) {
         discoveryJob: () => ok(fixtures.discoveryJobDetail),
         discoveryResults: () => ok({ items: fixtures.discoveryResults, nextCursor: null }),
         discoveryCandidates: () => ok({ items: [], nextCursor: null }),
+        discoveryQueries: () => ok({ items: fixtures.discoveryQueries, nextCursor: null }),
         discoveryResultsCsvUrl: (id: string) => `/api/discovery/jobs/${id}/results.csv`,
         createDiscoveryJob: () => ok(fixtures.discoveryJobDetail),
         readRow: () => ok(fixtures.rowReading),
@@ -70,9 +71,16 @@ afterEach(() => {
 describe('views render', () => {
   it('overview', async () => {
     mockApi();
-    const { OverviewView } = await import('../src/views/overview.js');
-    const html = render(<OverviewView window="24h" onWindow={() => {}} />);
-    expect(html).toContain('Overview');
+    const { OverviewView, OverviewSections } = await import('../src/views/overview.js');
+    expect(render(<OverviewView window="24h" onWindow={() => {}} />)).toContain('Overview');
+    // The serper cost card, with the engine's figures as they came.
+    const html = render(<OverviewSections data={fixtures.overview} />);
+    expect(html).toContain('serper cost');
+    expect(html).toContain('$0.033');
+    expect(html).toContain('$0.0165');
+    expect(html).toContain('35%');
+    expect(html).toContain('costliest searches');
+    expect(html).toContain('Microsilica (silica fume)');
   });
 
   it('queue', async () => {
@@ -183,6 +191,8 @@ describe('discovery', () => {
     expect(html).toContain('Download CSV');
     expect(html).toContain('results.csv');
     expect(html).toContain('finder exploded');
+    expect(html).toContain('Serper cost');
+    expect(html).toContain('$0.022');
     expect(html).toContain('rank');
     expect(html).toContain('results');
   });
