@@ -37,8 +37,11 @@ browser**: the internal token opens every tenant's data.
 
 One call fills the whole screen: health, per-queue job counts, message counts
 by status, why messages were blocked, a row per tenant, webhook pending and
-failed, open reservations and how many expire within fifteen minutes, and
-discovery search counts.
+failed, open reservations and how many expire within fifteen minutes,
+discovery search counts, and what Serper cost (`serper`): the window's and
+all-time totals and averages per search, per query and per call, the cache
+rate, a series to chart, and the spend by kind, country and tenant with the
+costliest searches. Render the figures as they come; the engine priced them.
 
 Nothing is cached, so what it says is true at `asOf`. Render `blockedReasons`
 prominently — `no_consent`, `suppressed`, `rule:<name>` — because that is where
@@ -196,6 +199,14 @@ the file, for the country selected or all of them.
 **`GET /internal/discovery/jobs/:id/candidates?country&status`** is what the
 searches found, kept first, with each candidate's persona, fit and triage
 reason; the job page lists the kept ones and shows the dropped ones on request.
+
+**What a search cost.** Each row of the list and the job page carry `spend`
+(queries, Serper calls, cache hits, credits, `usd`), and so does each task.
+The job page lists every query the search made from
+**`GET /internal/discovery/queries?jobId`**: when, country, web or Maps, the
+query and its language, the persona, whether Serper or the cache answered,
+hits, credits and cost. The list is asked again whenever the job's `spend`
+changes, so it fills while a search runs.
 
 Until reading arrives (step 20), a suppliers search ranks only the companies
 already in the pool and a buyers search ranks nothing; the view says so.
