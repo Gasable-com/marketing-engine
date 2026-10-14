@@ -47,7 +47,7 @@ async function setupChannels() {
     provider: 'fake', sender: 'ACME', unsubscribeText: 'Reply STOP', config: { token: 'good' },
   });
   await call('PUT', '/v1/channels/email', {
-    provider: 'fake', sender: 'news@acme.test', config: { token: 'good' },
+    provider: 'fake', sender: 'news@acme.example', config: { token: 'good' },
   });
   await call('PUT', '/v1/templates/outreach', { channel: 'sms', body: 'Hello {{ contact.name }}' });
   await call('PUT', '/v1/templates/outreach', {
@@ -431,9 +431,12 @@ describe('hidden contacts', () => {
     const rows = await db()<{ variables: Record<string, any> }[]>`select variables from messages where tenant_id = ${TENANT_A}`;
     for (const row of rows) expect(row.variables['contact']).toMatchObject({ phone: null, email: null, telegram: null });
 
-    // Nothing the tenant's webhooks would carry names an address.
+    // Nothing the tenant's webhooks would carry about the audience, its
+    // campaign, its contacts or its messages names an address. (The
+    // company.* events are the registry's, about what this test seeded.)
     const events = await db()<{ type: string; subject_id: string | null; payload: unknown }[]>`
-      select type, subject_id, payload from events where tenant_id = ${TENANT_A}
+      select type, subject_id, payload from events
+      where tenant_id = ${TENANT_A} and type not like 'company.%'
     `;
     expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(['audience.resolved', 'campaign.run.finished', 'message.queued']));
     for (const event of events) {

@@ -396,9 +396,11 @@ async function buyersOf(
   }
 
   const addresses = await contactIdentifiers(tx, [...byCompany.keys()]);
+  const asked = (id: string) => definition.searchIds.indexOf(id);
   for (const buyer of byCompany.values()) {
     const held = addresses.get(buyer.company.id);
     buyer.reachable = Boolean(held && (held.phones.length || held.emails.length));
+    buyer.searchIds.sort((a, b) => asked(a) - asked(b));
   }
 
   const buyers = [...byCompany.values()].sort(
