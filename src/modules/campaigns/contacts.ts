@@ -23,9 +23,70 @@ export type ContactRow = {
   name: string | null;
   locale: string | null;
   attributes: Record<string, unknown>;
+  /**
+   * An outreach contact the engine made for a found buyer (a discovery
+   * audience). The tenant never sees its addresses: it is not listed, a read
+   * by id answers as unknown, and wherever it appears its addresses are null.
+   * It becomes a normal contact when the tenant stores the same address.
+   */
+  hidden: boolean;
   created_at: Date;
   updated_at: Date;
 };
+
+/** A contact with its company's name, for the views that show one. */
+export type ContactWithCompany = ContactRow & { company_name: string | null };
+
+/**
+ * A contact as the tenant may see it. A hidden one shows its company and no
+ * address; any other shows its addresses and, when it has one, its company.
+ */
+export function presentContact(contact: ContactWithCompany): {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  telegram: string | null;
+  company: { id: string; name: string } | null;
+} {
+  return {
+    name: contact.name,
+    phone: contact.hidden ? null : contact.phone,
+    email: contact.hidden ? null : contact.email,
+    telegram: contact.hidden ? null : contact.telegram,
+    company:
+      contact.company_id ? { id: contact.company_id, name: contact.company_name ?? '' } : null,
+  };
+}
+
+/** The contacts with these ids, in id order, each with its company's name. */
+export async function contactsWithCompany(tx: Tx, ids: string[]): Promise<ContactWithCompany[]> {
+  if (ids.length === 0) return [];
+  return tx<ContactWithCompany[]>`
+    select c.*, co.name as company_name
+    from contacts c
+    left join companies co on co.id = c.company_id
+    where c.id = any(${ids}::uuid[])
+    order by c.id
+  `;
+}
+
+/**
+ * The hidden contact holding this address for the tenant, if there is one:
+ * the one case in which a message's address is not shown.
+ */
+export async function hiddenContactByAddress(
+  tx: Tx,
+  tenantId: string,
+  address: string,
+): Promise<ContactRow | undefined> {
+  const [row] = await tx<ContactRow[]>`
+    select * from contacts
+    where tenant_id = ${tenantId} and hidden
+      and (phone = ${address} or email = ${address} or telegram = ${address})
+    limit 1
+  `;
+  return row;
+}
 
 export type ContactFields = {
   phone?: string | undefined;
@@ -90,6 +151,8 @@ export async function upsertContact(
   const companyId = await companyFor(tx, input.companyId, addresses, matches[0]?.company_id);
   const existing = matches[0];
 
+  // The tenant storing an address the engine had hidden brings that contact
+  // into the open: the tenant holds the address now.
   const [row] = existing
     ? await tx<ContactRow[]>`
         update contacts set
@@ -100,6 +163,7 @@ export async function upsertContact(
           name       = coalesce(${input.name ?? null}, name),
           locale     = coalesce(${input.locale ?? null}, locale),
           attributes = attributes || ${tx.json((input.attributes ?? {}) as never)},
+          hidden     = false,
           updated_at = now()
         where id = ${existing.id}
         returning *
@@ -152,12 +216,13 @@ async function companyFor(
   return null;
 }
 
+/** A contact by id. A hidden one answers as unknown. */
 export async function getContact(tx: Tx, id: string): Promise<ContactRow | undefined> {
-  const [row] = await tx<ContactRow[]>`select * from contacts where id = ${id}`;
+  const [row] = await tx<ContactRow[]>`select * from contacts where id = ${id} and not hidden`;
   return row;
 }
 
-/** Newest first, cursor by the last row's id. RLS scopes the rows to the tenant. */
+/** Newest first, cursor by the last row's id. RLS scopes the rows to the tenant; hidden ones are left out. */
 export async function listContacts(
   tx: Tx,
   input: { q?: string | undefined; companyId?: string | undefined; limit: number; cursor?: string | undefined },
@@ -165,7 +230,7 @@ export async function listContacts(
   const like = input.q ? `%${input.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%` : null;
   return tx<ContactRow[]>`
     select * from contacts
-    where true
+    where not hidden
       ${like ? tx`and (name ilike ${like} or phone ilike ${like} or email ilike ${like} or telegram ilike ${like})` : tx``}
       ${input.companyId ? tx`and company_id = ${input.companyId}` : tx``}
       ${input.cursor ? tx`and (created_at, id) < (select created_at, id from contacts where id = ${input.cursor})` : tx``}

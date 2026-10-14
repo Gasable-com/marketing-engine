@@ -19,12 +19,14 @@ import {
   listContacts,
   listRecipients,
   listRuns,
+  MAX_AUDIENCE_SEARCHES,
   memberCount,
   patchAudience,
   patchCampaign,
   patchContact,
   pauseCampaign,
   previewAudience,
+  previewDiscovery,
   removeMember,
   resumeCampaign,
   scheduleCampaign,
@@ -79,9 +81,24 @@ const searchDefinition = z.object({
     .optional(),
 });
 
+const distinct = (list: string[]) => new Set(list).size === list.length;
+
+/**
+ * A discovery audience: a requester's own finished searches, the fits to
+ * keep, and the buyers it unticked. The portal sets `requesterRef` from its
+ * session, as it does for discovery itself.
+ */
+const discoveryDefinition = z.object({
+  requesterRef: z.string().trim().min(1).max(200),
+  searchIds: z.array(uuid).min(1).max(MAX_AUDIENCE_SEARCHES).refine(distinct, 'each search once'),
+  fit: z.array(z.enum(['strong', 'weak'])).min(1).max(2).refine(distinct, 'each fit once').default(['strong']),
+  excludeCompanyIds: z.array(uuid).max(4000).default([]),
+});
+
 const audienceBody = z.discriminatedUnion('kind', [
   z.object({ name: z.string().min(1).max(200), kind: z.literal('static') }),
   z.object({ name: z.string().min(1).max(200), kind: z.literal('search'), definition: searchDefinition }),
+  z.object({ name: z.string().min(1).max(200), kind: z.literal('discovery'), definition: discoveryDefinition }),
 ]);
 
 const recurrence = z.object({
@@ -95,7 +112,8 @@ const campaignBody = z.object({
   audienceId: uuid,
   template: z.string().min(1).max(200),
   channel: channel.nullable().optional(),
-  purpose: z.enum(PURPOSES),
+  // Omitted: outreach on a discovery audience, marketing on any other.
+  purpose: z.enum(PURPOSES).optional(),
   variables: z.record(z.unknown()).optional(),
   scheduledAt: z.coerce.date().nullable().optional(),
   recurrence: recurrence.nullable().optional(),
@@ -181,6 +199,21 @@ campaigns.post('/v1/audiences', async (c) => {
   return c.json({ audience: serialiseAudience(row, row.kind === 'static' ? 0 : null) }, 201);
 });
 
+/**
+ * The buyers a discovery definition means right now, with nothing saved: the
+ * counts and the de-duplicated list, best rank first, each with whether the
+ * registry can reach it and never with how. The same checks as creating the
+ * audience, so the portal sees `search_not_found` while the supplier is
+ * still picking.
+ */
+campaigns.post('/v1/audiences/discovery-preview', async (c) => {
+  const parsed = discoveryDefinition.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json(invalid(parsed.error.issues), 400);
+
+  const preview = await withTenant(c.get('tenantId'), (tx) => previewDiscovery(tx, parsed.data));
+  return c.json(preview);
+});
+
 campaigns.get('/v1/audiences', async (c) => {
   const rows = await withTenant(c.get('tenantId'), (tx) => listAudiences(tx));
   return c.json({ items: rows.map((r) => serialiseAudience(r, r.members)) });
@@ -203,8 +236,12 @@ campaigns.get('/v1/audiences/:id', async (c) => {
 campaigns.patch('/v1/audiences/:id', async (c) => {
   const id = uuid.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'not found' }, 404);
+  // A definition is read by its shape; the module checks it fits the audience's kind.
   const parsed = z
-    .object({ name: z.string().min(1).max(200).optional(), definition: searchDefinition.optional() })
+    .object({
+      name: z.string().min(1).max(200).optional(),
+      definition: z.union([discoveryDefinition, searchDefinition]).optional(),
+    })
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json(invalid(parsed.error.issues), 400);
 
@@ -282,8 +319,10 @@ campaigns.delete('/v1/audiences/:id/members/:contactId', async (c) => {
 /**
  * Who would actually get a send to this audience: the first `limit` contacts,
  * each with send()'s verdict for `purpose` (and `channel`, if named), plus the
- * audience's total size. `evaluateAt` judges the sending window at another
- * time, e.g. when the campaign is scheduled for.
+ * audience's total size. `purpose` defaults to what a campaign on the audience
+ * would send: outreach for a discovery audience, marketing otherwise.
+ * `evaluateAt` judges the sending window at another time, e.g. when the
+ * campaign is scheduled for.
  */
 campaigns.post('/v1/audiences/:id/preview', async (c) => {
   const id = uuid.safeParse(c.req.param('id'));
@@ -291,7 +330,7 @@ campaigns.post('/v1/audiences/:id/preview', async (c) => {
   const q = z
     .object({
       limit: z.coerce.number().int().min(1).max(200).default(20),
-      purpose: z.enum(PURPOSES).default('marketing'),
+      purpose: z.enum(PURPOSES).optional(),
       channel: channel.optional(),
       evaluateAt: z.coerce.date().optional(),
     })
@@ -304,7 +343,7 @@ campaigns.post('/v1/audiences/:id/preview', async (c) => {
       tenantId,
       audienceId: id.data,
       limit: q.data.limit,
-      purpose: q.data.purpose,
+      ...(q.data.purpose ? { purpose: q.data.purpose } : {}),
       ...(q.data.channel ? { channel: q.data.channel } : {}),
       ...(q.data.evaluateAt ? { at: q.data.evaluateAt } : {}),
     }),
@@ -455,7 +494,7 @@ function serialiseAudience(row: AudienceRow, members: number | null) {
     id: row.id,
     name: row.name,
     kind: row.kind,
-    definition: row.kind === 'search' ? row.definition : null,
+    definition: row.kind === 'static' ? null : row.definition,
     members,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),

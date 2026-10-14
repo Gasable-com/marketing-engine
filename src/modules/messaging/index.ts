@@ -1,5 +1,5 @@
 import type { Tx } from '../../db/client.js';
-import { normalize, type Channel, type Purpose } from '../../spine/contacts/normalize.js';
+import { isPromotional, normalize, type Channel, type Purpose } from '../../spine/contacts/normalize.js';
 import { emit } from '../../spine/events/index.js';
 import { decrypt, encrypt } from '../../spine/secrets.js';
 import { enqueue } from '../../jobs/index.js';
@@ -305,14 +305,14 @@ export async function send(
   const rendered = await renderFor(channel, template, withContact(input.variables, contact.address));
 
   let body = rendered.body;
-  if (input.purpose === 'marketing' && channel !== 'email') {
+  if (isPromotional(input.purpose) && channel !== 'email') {
     // Email carries its opt-out in the List-Unsubscribe header instead.
     const unsubscribe = config.unsubscribe_text?.trim();
     if (!unsubscribe) {
       throw new MessagingError(
         'unsubscribe_text_required',
         422,
-        `channel ${channel} has no unsubscribe_text, which marketing messages require`,
+        `channel ${channel} has no unsubscribe_text, which ${input.purpose} messages require`,
       );
     }
     body = `${body}\n${unsubscribe}`;

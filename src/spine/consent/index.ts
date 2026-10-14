@@ -152,7 +152,9 @@ export async function canSend(
   `;
   if (suppressed) return { allowed: false, reason: 'suppressed' };
 
-  // 2. Consent, for marketing only. Transactional messages need none.
+  // 2. Consent, for marketing only. Transactional messages need none, and
+  // outreach to a found buyer goes without it: an opt-out above still wins,
+  // and the sending window below still applies.
   if (input.purpose === 'marketing') {
     const [latest] = await tx<{ status: ConsentStatus }[]>`
       select status from consent

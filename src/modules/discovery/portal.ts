@@ -177,6 +177,89 @@ function whyOf(evidence: { claim: string; quote: string }[], reasons: string[]):
   return lines.filter((l) => !leaks.test(l));
 }
 
+/**
+ * The status of each of the requester's searches among `ids`. A search that
+ * does not exist, or is another requester's, is absent: the same answer.
+ */
+export async function ownSearchStatuses(
+  tx: Tx,
+  input: { requesterRef: string; ids: string[] },
+): Promise<Map<string, JobRow['status']>> {
+  if (input.ids.length === 0) return new Map();
+  const rows = await tx<Pick<JobRow, 'id' | 'status'>[]>`
+    select id::text as id, status from discovery_jobs
+    where id = any(${input.ids}::uuid[]) and requester_ref = ${input.requesterRef}
+  `;
+  return new Map(rows.map((r) => [r.id, r.status]));
+}
+
+export type RankedCompany = {
+  searchId: string;
+  rank: number;
+  fit: 'strong' | 'weak';
+  /** The company as it is now: a merged-away result is given as its survivor. */
+  companyId: string;
+  name: string;
+  country: string | null;
+  city: string | null;
+  onPlatform: boolean;
+};
+
+/**
+ * Every result of these searches with one of these fits, as the portal sees
+ * a company (name, city, country) plus what an audience needs to know about
+ * it now: merges are followed to the survivor, and whether it has since
+ * joined the marketplace. One company may appear once per search.
+ */
+export async function rankedCompanies(
+  tx: Tx,
+  input: { searchIds: string[]; fit: ('strong' | 'weak')[] },
+): Promise<RankedCompany[]> {
+  if (input.searchIds.length === 0 || input.fit.length === 0) return [];
+  const rows = await tx<
+    {
+      search_id: string;
+      rank: number;
+      fit: 'strong' | 'weak';
+      company_id: string;
+      name: string;
+      country: string | null;
+      cities: string[] | null;
+      on_platform: boolean;
+    }[]
+  >`
+    with recursive hop as (
+      select r.job_id, r.rank, r.fit, c.id, c.merged_into, 0 as depth
+      from discovery_results r
+      join companies c on c.id = r.company_id
+      where r.job_id = any(${input.searchIds}::uuid[]) and r.fit = any(${input.fit}::text[])
+      union all
+      select hop.job_id, hop.rank, hop.fit, c.id, c.merged_into, hop.depth + 1
+      from hop
+      join companies c on c.id = hop.merged_into
+      where hop.depth < 20
+    )
+    select h.job_id::text as search_id, h.rank, h.fit,
+           c.id::text as company_id, c.name, c.country, p.cities,
+           (c.on_platform_ref is not null) as on_platform
+    from hop h
+    join companies c on c.id = h.id
+    left join company_profiles p on p.company_id = c.id
+    where h.merged_into is null
+    order by h.rank, h.job_id, c.id
+  `;
+  return rows.map((r) => ({
+    searchId: r.search_id,
+    rank: r.rank,
+    fit: r.fit,
+    companyId: r.company_id,
+    name: r.name,
+    country: r.country,
+    city: r.cities?.[0] ?? null,
+    onPlatform: r.on_platform,
+  }));
+}
+
 export function portalRfq(rfq: RfqSearchRow, lines: (PortalSearch & { position: number })[]): PortalRfqSearch {
   return {
     id: rfq.id,

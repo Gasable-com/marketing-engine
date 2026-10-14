@@ -19,7 +19,7 @@ export type SendInput = {
   providerRef?: unknown;
   /** The intent's variables, for a provider that fills its own template. */
   variables?: Record<string, unknown> | undefined;
-  /** Email marketing only: the one-click List-Unsubscribe URL. */
+  /** Promotional email only (marketing, outreach): the one-click List-Unsubscribe URL. */
   unsubscribeUrl?: string | undefined;
 };
 

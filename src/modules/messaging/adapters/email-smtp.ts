@@ -1,4 +1,5 @@
 import nodemailer, { type Transporter } from 'nodemailer';
+import { isPromotional } from '../../../spine/contacts/normalize.js';
 import type {
   ChannelAdapter,
   CredentialCheck,
@@ -46,7 +47,7 @@ export const emailSmtpAdapter: ChannelAdapter = {
     // One-click unsubscribe. Gmail and Yahoo require it on bulk mail, and it is
     // the difference between an opt-out and a spam complaint.
     const headers: Record<string, string> = {};
-    if (input.purpose === 'marketing' && input.unsubscribeUrl) {
+    if (isPromotional(input.purpose) && input.unsubscribeUrl) {
       headers['List-Unsubscribe'] =
         `<${input.unsubscribeUrl}>, <mailto:${input.sender}?subject=unsubscribe>`;
       headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';

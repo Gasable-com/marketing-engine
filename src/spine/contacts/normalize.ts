@@ -3,8 +3,17 @@ import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js'
 export const CHANNELS = ['sms', 'whatsapp', 'email', 'telegram'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
-export const PURPOSES = ['transactional', 'marketing'] as const;
+export const PURPOSES = ['transactional', 'marketing', 'outreach'] as const;
 export type Purpose = (typeof PURPOSES)[number];
+
+/**
+ * Whether a purpose is promotional: it carries an opt-out (the unsubscribe
+ * text, List-Unsubscribe) and keeps to the promotional sending windows.
+ * Marketing needs consent as well; outreach to a found buyer does not.
+ */
+export function isPromotional(purpose: Purpose): boolean {
+  return purpose !== 'transactional';
+}
 
 export type NormalizedContact = {
   channel: Channel;

@@ -397,13 +397,15 @@ async function decide(
         template: campaign.template,
         variables: {
           ...campaign.variables,
+          // A hidden contact's addresses are the engine's to send to, not the
+          // template's to show: a found buyer's number never reaches a body.
           contact: {
             id: contact.id,
             name: contact.name,
             locale: contact.locale,
-            phone: contact.phone,
-            email: contact.email,
-            telegram: contact.telegram,
+            phone: contact.hidden ? null : contact.phone,
+            email: contact.hidden ? null : contact.email,
+            telegram: contact.hidden ? null : contact.telegram,
             attributes: contact.attributes,
           },
           company: company ? { id: company.id, name: company.name, country: company.country } : null,
