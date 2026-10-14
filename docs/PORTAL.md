@@ -110,12 +110,60 @@ Register an endpoint once with `POST /v1/webhooks` and the event types below. De
 - For a product search, `jobId` is the search's `id`.
 - An RFQ's lines also send their own `discovery.job.finished`, with `rfqSearchId` set. A portal that only shows RFQs as a whole can ignore those.
 
+## Supplier: found buyers as an audience
+
+A supplier who has run **Find buyers** can turn one or several of its finished searches into an **audience** and send it a campaign. The engine contacts the buyers as **outreach**: no marketing consent is needed, every opt-out and sending window still applies, and the supplier never sees a buyer's phone or email. A company found in several searches is one buyer and gets one message.
+
+As for discovery, the portal backend sets `requesterRef` from the session and forwards only the calls below. An audience can only draw on that requester's own searches.
+
+1. **Preview while picking.** Show the counts and the buyer list as the supplier ticks searches, and let it untick buyers.
+
+   ```
+   POST /v1/audiences/discovery-preview
+   { "requesterRef": "sup-4411", "searchIds": ["…", "…"], "fit": ["strong"], "excludeCompanyIds": [] }
+   → 200 { "companies": 86, "reachable": 64, "unreachable": 22,
+           "buyers": [ { "company": { "id": "…", "name": "Seerah" }, "city": "Riyadh", "country": "SA",
+                         "fit": "strong", "rank": 1, "searchIds": ["…"], "reachable": true }, … ] }
+   ```
+
+   - `searchIds`: 1 to 20 of the requester's searches, each `done`. A search that is missing or another requester's is `400 { "error": "search_not_found", "ids": [...] }`; one still running is `400 { "error": "search_not_done", "ids": [...] }`.
+   - `fit`: `["strong"]` (the default) or `["strong", "weak"]` to include the possible buyers too.
+   - `buyers` is the whole de-duplicated list, best rank first. `reachable` says whether the engine holds a phone or an email for the company, never which. An unreachable buyer gets no message. Companies that have since joined the marketplace are left out.
+   - Nothing is saved. Call it again with a saved audience's `definition` to list that audience's buyers.
+2. **Create the audience.**
+
+   ```
+   POST /v1/audiences
+   { "name": "Buyers: Calcium Hypochlorite + 2 more", "kind": "discovery",
+     "definition": { "requesterRef": "sup-4411", "searchIds": ["…", "…"], "fit": ["strong"], "excludeCompanyIds": ["…"] } }
+   → 201 { "audience": { "id", "name", "kind": "discovery", "definition", "members": null, … } }
+   ```
+
+   `PATCH /v1/audiences/:id` changes `name` or `definition` with the same checks; `DELETE` works as today (`409 audience_in_use` while a campaign points at it).
+3. **Preview who will get it.** `POST /v1/audiences/:id/preview` answers as for any audience, with `companies`, `reachable` and `unreachable` added, and every contact's `phone`, `email` and `telegram` as `null` beside `company: { id, name }`. `purpose` defaults to `outreach` here. This resolves the audience, so it is the same list the campaign will send to.
+4. **Send the campaign.** Create it with `purpose: "outreach"` (or leave `purpose` out: a discovery audience defaults to it) and `channel: null` so the engine picks the best channel per buyer, then schedule, pause, resume and cancel exactly as today.
+
+   ```
+   POST /v1/campaigns
+   { "name": "Calcium hypochlorite intro", "audienceId": "…", "template": "buyer_intro",
+     "channel": null, "purpose": "outreach", "variables": { "product": "Calcium Hypochlorite 70%" } }
+   → 201 { "campaign": { "id", "status": "draft", "purpose": "outreach", … } }
+   POST /v1/campaigns/:id/schedule
+   ```
+
+   - The template must exist for every channel the tenant has a provider for (`400 template_not_found` lists the `missing` ones). It gets `contact.name` (the company's name) and `company`; a buyer's `contact.phone`, `email` and `telegram` are `null` in the template too.
+   - `outreach` goes only to a discovery audience, and a discovery audience takes only `outreach`: anything else is `400 purpose_mismatch`. A single `POST /v1/messages` with `outreach` is `400 purpose_not_allowed`.
+   - The recipients list (`GET /v1/campaigns/:id/runs/:runId/recipients`) and `GET /v1/messages/:id` show each buyer as `company: { id, name }` with no address. A buyer blocked as `suppressed` opted out earlier (an unsubscribe, a STOP, a complaint) and will stay blocked; one `pending` with `notBefore` is waiting for its country's sending window.
+   - A recurring outreach campaign resolves the audience again on each run, so a buyer that opted out or joined the marketplace drops out of the next run.
+
+Not in this step: showing contacts to the supplier, a reply path or an invite link, per-buyer frequency caps across campaigns, and audiences from corporate RFQ searches.
+
 ## What the portal builds
 
-- **Supplier product page.** A "Find buyers" button opens a progress card (`progress`), then the results list (name, city, why). Show the quota from `GET quota` next to the button.
+- **Supplier product page.** A "Find buyers" button opens a progress card (`progress`), then the results list (name, city, why). Show the quota from `GET quota` next to the button. From a finished search, "Contact these buyers" picks searches with the preview above, saves the audience and starts an outreach campaign.
 - **Corporate RFQ page.** A "Find suppliers" button opens the same progress, per item, then the results grouped by item.
 - **Backend.** A thin proxy that adds the tenant token and the logged-in user's `requesterRef`, plus a webhook receiver that marks searches ready.
 
 ## Not yet
 
-Contacting a found company from the portal (invite to the platform, or to quote on an RFQ) is a later step. Results are read-only for now.
+Contacting a found **supplier** from an RFQ search (an invite to the platform, or to quote) is a later step; RFQ results are read-only for now.
