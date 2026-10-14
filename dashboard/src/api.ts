@@ -6,7 +6,9 @@
  * implementation, and would still build if the engine were rewritten.
  */
 
-const BASE = '/api';
+// Follows wherever the app is mounted: `/api` at the root, `/marketing/api`
+// when it is served under /marketing.
+const BASE = `${import.meta.env.BASE_URL.replace(/\/+$/, '')}/api`;
 
 export class ApiError extends Error {
   constructor(

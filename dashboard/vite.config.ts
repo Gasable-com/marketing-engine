@@ -13,7 +13,12 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   const engine = env['ENGINE_URL'] ?? 'http://localhost:3000';
 
+  // Served from a sub-path behind a shared domain (/marketing) as often as
+  // from the root, and the built asset URLs have to match wherever it lands.
+  const base = env['BASE_PATH'] ?? '/';
+
   return {
+    base,
     plugins: [preact()],
     server: {
       port: 5173,

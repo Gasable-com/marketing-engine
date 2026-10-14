@@ -20,6 +20,17 @@ server {
   add_header X-Content-Type-Options "nosniff" always;
   add_header Referrer-Policy "no-referrer" always;
 
+  # Liveness, deliberately outside the password. A container's healthcheck
+  # cannot hold an operator's credentials, and an unhealthy container is
+  # skipped by the reverse proxy — so an authenticated healthcheck takes the
+  # dashboard off the internet entirely.
+  location = /healthz {
+    auth_basic off;
+    access_log off;
+    add_header Content-Type text/plain;
+    return 200 'ok';
+  }
+
   # SSE: no buffering, no early timeout, or the live feed arrives in lumps or
   # not at all.
   location /api/stream {
