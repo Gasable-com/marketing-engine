@@ -117,6 +117,31 @@ export async function findByIdentifier(
   return row ? resolve(tx, row.company_id) : undefined;
 }
 
+/**
+ * The phones and emails the registry holds for each of these companies, in
+ * the order they were recorded, so the first is the longest known. Companies
+ * with neither are absent.
+ */
+export async function contactIdentifiers(
+  tx: Tx,
+  companyIds: string[],
+): Promise<Map<string, { phones: string[]; emails: string[] }>> {
+  const found = new Map<string, { phones: string[]; emails: string[] }>();
+  if (companyIds.length === 0) return found;
+
+  const rows = await tx<Pick<IdentifierRow, "company_id" | "type" | "value">[]>`
+    select company_id::text as company_id, type, value from company_identifiers
+    where company_id = any(${companyIds}::uuid[]) and type in ('phone', 'email')
+    order by id
+  `;
+  for (const row of rows) {
+    const entry = found.get(row.company_id) ?? { phones: [], emails: [] };
+    (row.type === "phone" ? entry.phones : entry.emails).push(row.value);
+    found.set(row.company_id, entry);
+  }
+  return found;
+}
+
 export type CompanyDetail = {
   company: CompanyRow;
   identifiers: IdentifierRow[];

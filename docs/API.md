@@ -165,13 +165,21 @@ Statuses: `blocked`, `queued`, `sent`, `delivered`, `read`, `failed`.
 Block reasons: `no_channel` (with each channel's reason in the
 `message.blocked` event), or a specific one on a named channel.
 
-Errors: `400` `address_missing` / `template_variable_missing`, `404`
-`template_not_found`, `409` `channel_not_configured`, `422`
-`unsubscribe_text_required` / `template_unfit`.
+Purposes: `transactional` (no consent, no opt-out text), `marketing` (consent
+and the opt-out text) and `outreach` (the opt-out text, no consent). `outreach`
+is what a campaign sends to a discovery audience and nothing else: here it is
+`400 purpose_not_allowed`.
+
+Errors: `400` `address_missing` / `template_variable_missing` /
+`purpose_not_allowed`, `404` `template_not_found`, `409`
+`channel_not_configured`, `422` `unsubscribe_text_required` / `template_unfit`.
 
 ### `GET /v1/messages/:id` — tenant JWT
 
-→ `200 { "message": … }` or `404`.
+→ `200 { "message": … }` or `404`. The message carries `company: { id, name }`
+(the registry company its address belongs to, or `null`). A message to a
+hidden contact (a found buyer, see Contacts) has `address: null`: the company
+is shown, the address never.
 
 ---
 
@@ -206,6 +214,10 @@ A dry run; sends nothing.
 The order is fixed and the first failure wins: suppression (an opt-out beats
 everything, including a transactional message), then consent for `marketing`
 only, then region-scoped `sending_window` rules in the contact's own local time.
+`outreach` skips consent, as `transactional` does, but the sending window
+applies to it as to `marketing` (the Saudi rule names both), and so does every
+suppression: an unsubscribe, STOP or complaint on an outreach message blocks the
+address for good.
 
 ---
 
@@ -596,11 +608,27 @@ row 1.
 `cursor` (the last row's `id`). `PATCH` takes the same fields as `POST`;
 an address another contact already has is `409 contact_conflict`.
 
+### Hidden contacts
+
+A **discovery audience** (below) makes one contact per buyer it found, holding
+the company's phone and email from the registry. Those contacts are **hidden**:
+the tenant never brought the address, so it never sees it.
+
+- `GET /v1/contacts` does not list them; `GET` and `PATCH /v1/contacts/:id`
+  answer `404`, and `POST /v1/audiences/:id/members` reports the id as
+  `unknown`. A `search` audience never picks them.
+- Wherever one appears (an audience preview, a run's recipients,
+  `GET /v1/messages/:id`, the template's `contact`), `phone`, `email` and
+  `telegram` are `null` and `company: { id, name }` says who it is.
+- No event carries a hidden contact's address.
+- `POST /v1/contacts` or an import with the same address makes it a normal,
+  visible contact: the tenant holds the address now.
+
 ---
 
 ## Audiences
 
-A named group of contacts, of one of two kinds:
+A named group of contacts, of one of three kinds:
 
 - **`static`** — an explicit member list.
 - **`search`** — a definition resolved every time it is used:
@@ -615,18 +643,57 @@ A named group of contacts, of one of two kinds:
   it returns. `hasChannel` keeps contacts with an address for any of those
   channels; `tags` matches `attributes.tags`. A company that joins the
   marketplace drops out, as it does from search.
+- **`discovery`** — the buyers a requester's finished portal searches found,
+  resolved every time it is used:
+
+  ```json
+  { "requesterRef": "sup-4411", "searchIds": ["…", "…"], "fit": ["strong"], "excludeCompanyIds": ["…"] }
+  ```
+
+  `requesterRef` is required; `searchIds` is 1 to 20 of that requester's
+  product searches, each `done` (`400 search_not_found { ids }` for a search
+  that is missing or another requester's, `400 search_not_done { ids }` for one
+  still running); `fit` is `["strong"]` (the default) or `["strong", "weak"]`;
+  `excludeCompanyIds` lists buyers unticked. Resolution takes the union of the
+  searches' results in `fit`, follows merges to the survivor, keeps each
+  company once, drops the excluded and those now on the marketplace, and then
+  makes **one hidden contact per company** that the registry holds a phone or
+  email for, carrying its longest-known phone and email and named after the
+  company. A normal contact the tenant already holds for one of those addresses
+  is used unchanged. A company with neither is `unreachable` and gets nothing.
+  Each resolution emits `audience.resolved`. Only `outreach` campaigns may use
+  it (see Campaigns), and `docs/PORTAL.md` walks the portal through it.
 
 ### `POST /v1/audiences` — tenant JWT
 
-`{ "name": "diesel buyers", "kind": "static" }` or
-`{ "name": "…", "kind": "search", "definition": {…} }`. Names are unique per
+`{ "name": "diesel buyers", "kind": "static" }`,
+`{ "name": "…", "kind": "search", "definition": {…} }` or
+`{ "name": "…", "kind": "discovery", "definition": {…} }`. Names are unique per
 tenant (`409 audience_exists`).
+
+### `POST /v1/audiences/discovery-preview` — tenant JWT
+
+A discovery definition, as above, answered with nothing saved:
+
+```json
+{ "companies": 86, "reachable": 64, "unreachable": 22,
+  "buyers": [ { "company": { "id": "…", "name": "Seerah" }, "city": "Riyadh", "country": "SA",
+                "fit": "strong", "rank": 1, "searchIds": ["…"], "reachable": true } ] }
+```
+
+The same checks and errors as creating the audience. `buyers` is the whole
+de-duplicated list, best rank first, each with its best `fit` and `rank` across
+the searches it was found in; `reachable` says whether the registry holds a
+phone or an email, never which. For the portal while a supplier is picking
+searches, and for listing a saved audience's buyers from its `definition`.
 
 ### `GET /v1/audiences` · `GET /v1/audiences/:id` · `PATCH /v1/audiences/:id` · `DELETE /v1/audiences/:id`
 
-`members` is the member count for a static audience, `null` for a search.
-`PATCH` takes `name` and, for a search audience, `definition`. `DELETE` is
-`409 audience_in_use` while a campaign points at it.
+`members` is the member count for a static audience, `null` for a search or
+discovery audience. `PATCH` takes `name` and, for a search or discovery
+audience, a `definition` of its own kind (`400 invalid_definition` otherwise),
+with the same checks as create. `DELETE` is `409 audience_in_use` while a
+campaign points at it.
 
 ### `POST /v1/audiences/:id/members` — tenant JWT
 
@@ -643,7 +710,7 @@ Static audiences only (`400 not_static`).
 
 → `204`, or `404`.
 
-### `POST /v1/audiences/:id/preview?limit=20&purpose=marketing&channel=&evaluateAt=` — tenant JWT
+### `POST /v1/audiences/:id/preview?limit=20&purpose=&channel=&evaluateAt=` — tenant JWT
 
 **The honest answer to "who will actually get this".** Show it before
 scheduling anything.
@@ -653,6 +720,7 @@ scheduling anything.
   "total": 3, "sampled": 3, "sendable": 1,
   "contacts": [
     { "id": "…", "name": "Amal", "phone": "+1415…", "email": null, "telegram": null,
+      "company": { "id": "…", "name": "Alfa Diesel" },
       "allowed": true, "channel": "sms", "reason": null },
     { "id": "…", "allowed": false, "channel": null, "reason": "suppressed" },
     { "id": "…", "allowed": false, "channel": null, "reason": "no_consent" }
@@ -663,9 +731,17 @@ scheduling anything.
 `total` is the whole audience; `contacts` are the first `limit` of it (by
 contact id), each with the verdict `send()` would give for `purpose` on its best
 channel — the same consent, suppression, rules and channel selection, with
-nothing written. `sendable` counts the allowed ones **among those sampled**.
-`channel` pins the channel as a campaign with a channel would. `evaluateAt`
-judges the sending window at another time, e.g. when the campaign will run.
+nothing written to messages. `purpose` defaults to what a campaign on the
+audience would send: `outreach` for a discovery audience, `marketing` for the
+others. `sendable` counts the allowed ones **among those sampled**. `channel`
+pins the channel as a campaign with a channel would. `evaluateAt` judges the
+sending window at another time, e.g. when the campaign will run. `company` is
+the contact's registry company, or `null`.
+
+On a discovery audience the preview resolves it (so its hidden contacts are
+made, as a run would make them), shows every contact with `phone`, `email` and
+`telegram` as `null`, and adds `companies`, `reachable` and `unreachable`: the
+buyers behind the contacts, as `discovery-preview` counts them.
 
 ---
 
@@ -693,6 +769,11 @@ rules, channel selection, templates, fallback and the event log all apply.
 ```
 
 - `channel` null or absent: selection picks per recipient.
+- `purpose` absent: `outreach` on a discovery audience, `marketing` on any
+  other. `outreach` goes only to a discovery audience, and a discovery audience
+  takes only `outreach`; anything else is `400 purpose_mismatch`, on create and
+  on edit. Outreach needs no consent; every opt-out, the unsubscribe text and
+  the sending windows apply to it as to marketing.
 - `scheduledAt` absent on a one-shot: runs as soon as it is scheduled. On a
   recurrence it means "not before".
 - `recurrence.cron` is a standard five-field cron (numbers, `*`, lists,
@@ -702,12 +783,13 @@ rules, channel selection, templates, fallback and the event log all apply.
   flagged.
 - The template gets the campaign's `variables` plus `contact` (`id`, `name`,
   `locale`, `phone`, `email`, `telegram`, `attributes`, and `address`, the one
-  it went to) and `company` (`id`, `name`, `country`, or null).
+  it went to) and `company` (`id`, `name`, `country`, or null). For a hidden
+  contact, `phone`, `email` and `telegram` are `null`.
 
 Created as a `draft`. Errors: `400 template_not_found` (for the named channel,
 or — with no channel — for any channel the tenant has a provider for, listed in
-`missing`), `400 invalid_cron`, `400 invalid_timezone`, `400 scheduled_at_past`,
-`404 audience_not_found`. Emits `campaign.created`.
+`missing`), `400 purpose_mismatch`, `400 invalid_cron`, `400 invalid_timezone`,
+`400 scheduled_at_past`, `404 audience_not_found`. Emits `campaign.created`.
 
 ### `GET /v1/campaigns?status=` · `GET /v1/campaigns/:id` · `PATCH /v1/campaigns/:id`
 
@@ -786,11 +868,15 @@ Who got it, who didn't, and why, in one call:
 
 ```json
 { "items": [{ "contactId": "…", "name": "…", "phone": "…", "email": null, "telegram": null,
+              "company": { "id": "…", "name": "Alfa Diesel" },
               "state": "blocked", "reason": "no_consent", "notBefore": null, "messageId": "…",
               "message": { "channel": "sms", "status": "blocked", "blockedReason": "no_channel",
                            "error": null, "updatedAt": "…" } }],
   "nextCursor": null }
 ```
+
+`company` is the contact's registry company, or `null`. A hidden contact (a
+found buyer) shows its company and `null` for every address.
 
 States: `pending` (not sent yet), `queued` (a message went on the queue;
 `message.status` says how it has fared since), `blocked` (`send()` refused;
@@ -1512,6 +1598,8 @@ here was later rolled back.
 `discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·
 `promo.released` · `contact.upserted` · `audience.saved` · `audience.deleted` ·
+`audience.resolved` (a discovery audience resolved for a preview or a run;
+payload: `companies`, `reachable`, `unreachable`, `contacts`, `created`) ·
 `campaign.created` · `campaign.scheduled` · `campaign.run.started` ·
 `campaign.run.finished` (payload: `runId`, `runNo`, `audienceSize`, `queued`,
 `blocked`, `skipped`) · `campaign.paused` · `campaign.resumed` ·

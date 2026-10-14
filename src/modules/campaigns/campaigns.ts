@@ -3,7 +3,8 @@ import { cancelWaiting, enqueue } from '../../jobs/queue.js';
 import type { Channel, Purpose } from '../../spine/contacts/normalize.js';
 import { emit } from '../../spine/events/index.js';
 import { configuredChannels, messageStatuses, templateChannels } from '../messaging/index.js';
-import { anySendable, getAudience } from './audiences.js';
+import { anySendable, defaultPurpose, getAudience } from './audiences.js';
+import { presentContact, type ContactWithCompany } from './contacts.js';
 import { CronError, isTimeZone, nextOccurrence, parseCron } from './cron.js';
 import { CampaignError } from './errors.js';
 
@@ -76,7 +77,8 @@ export type CampaignInput = {
   audienceId: string;
   template: string;
   channel?: Channel | null | undefined;
-  purpose: Purpose;
+  /** Omitted: `outreach` on a discovery audience, `marketing` on any other. */
+  purpose?: Purpose | undefined;
   variables?: Record<string, unknown> | undefined;
   scheduledAt?: Date | null | undefined;
   recurrence?: Recurrence | null | undefined;
@@ -87,17 +89,32 @@ export type CampaignInput = {
 /**
  * Everything create checks that a campaign must still satisfy when edited.
  * `checkScheduledAt: false` skips the future check, for an edit that leaves
- * a recurring campaign's long-past start alone.
+ * a recurring campaign's long-past start alone. Answers with the purpose the
+ * campaign gets, once the audience has filled in an omitted one.
  */
 async function validate(
   tx: Tx,
   tenantId: string,
   input: CampaignInput,
   opts: { checkScheduledAt?: boolean } = {},
-): Promise<void> {
+): Promise<{ purpose: Purpose }> {
   const audience = await getAudience(tx, input.audienceId);
   if (!audience || audience.tenant_id !== tenantId) {
     throw new CampaignError('audience_not_found', 404, 'no such audience');
+  }
+
+  // Outreach is for found buyers and nobody else: it needs no consent, so it
+  // goes only to a discovery audience, and a discovery audience, whose
+  // contacts have given none, takes nothing else.
+  const purpose = input.purpose ?? defaultPurpose(audience.kind);
+  if ((audience.kind === 'discovery') !== (purpose === 'outreach')) {
+    throw new CampaignError(
+      'purpose_mismatch',
+      400,
+      purpose === 'outreach'
+        ? 'outreach goes to a discovery audience only'
+        : `a discovery audience takes outreach campaigns only, not ${purpose}`,
+    );
   }
 
   // With a named channel the template must exist for it. Without one,
@@ -130,20 +147,21 @@ async function validate(
   if ((opts.checkScheduledAt ?? true) && input.scheduledAt && input.scheduledAt.getTime() <= Date.now()) {
     throw new CampaignError('scheduled_at_past', 400, 'scheduledAt must be in the future');
   }
+  return { purpose };
 }
 
 export async function createCampaign(
   tx: Tx,
   input: CampaignInput & { tenantId: string; duplicatedFrom?: string },
 ): Promise<CampaignRow> {
-  await validate(tx, input.tenantId, input);
+  const { purpose } = await validate(tx, input.tenantId, input);
 
   const [row] = await tx<CampaignRow[]>`
     insert into campaigns
       (tenant_id, name, audience_id, template, channel, purpose, variables,
        scheduled_at, recurrence, timezone, throttle_per_minute, status)
     values (${input.tenantId}, ${input.name}, ${input.audienceId}, ${input.template},
-            ${input.channel ?? null}, ${input.purpose},
+            ${input.channel ?? null}, ${purpose},
             ${tx.json((input.variables ?? {}) as never)},
             ${input.scheduledAt ?? null},
             ${input.recurrence ? tx.json(input.recurrence as never) : null},
@@ -210,7 +228,7 @@ export async function patchCampaign(
   };
   // A draft's start is checked as create checks it. A paused campaign's is
   // checked only when this edit sets it: a recurrence's start is usually past.
-  await validate(tx, input.tenantId, merged, {
+  const { purpose } = await validate(tx, input.tenantId, merged, {
     checkScheduledAt: existing.status === 'draft' || input.scheduledAt !== undefined,
   });
 
@@ -233,7 +251,7 @@ export async function patchCampaign(
   const [row] = await tx<CampaignRow[]>`
     update campaigns set
       name = ${merged.name}, audience_id = ${merged.audienceId}, template = ${merged.template},
-      channel = ${merged.channel ?? null}, purpose = ${merged.purpose},
+      channel = ${merged.channel ?? null}, purpose = ${purpose},
       variables = ${tx.json((merged.variables ?? {}) as never)},
       scheduled_at = ${merged.scheduledAt ?? null},
       recurrence = ${merged.recurrence ? tx.json(merged.recurrence as never) : null},
@@ -681,6 +699,8 @@ export type RecipientView = {
   phone: string | null;
   email: string | null;
   telegram: string | null;
+  /** The contact's company. A hidden contact (a found buyer) shows this and no address. */
+  company: { id: string; name: string } | null;
   state: 'pending' | 'queued' | 'blocked' | 'skipped';
   reason: string | null;
   /** A pending recipient waiting on a sending window: not tried before this. */
@@ -709,22 +729,19 @@ export async function listRecipients(
   },
 ): Promise<RecipientView[]> {
   const rows = await tx<
-    {
+    ({
       contact_id: string;
       state: RecipientView['state'];
       reason: string | null;
       not_before: Date | null;
       message_id: string | null;
-      name: string | null;
-      phone: string | null;
-      email: string | null;
-      telegram: string | null;
-    }[]
+    } & ContactWithCompany)[]
   >`
     select r.contact_id, r.state, r.reason, r.not_before, r.message_id,
-           c.name, c.phone, c.email, c.telegram
+           c.*, co.name as company_name
     from campaign_recipients r
     join contacts c on c.id = r.contact_id
+    left join companies co on co.id = c.company_id
     where r.run_id = ${input.runId}
       ${input.state ? tx`and r.state = ${input.state}` : tx``}
       ${input.cursor ? tx`and r.contact_id > ${input.cursor}` : tx``}
@@ -741,10 +758,7 @@ export async function listRecipients(
     const message = r.message_id ? statuses.get(r.message_id) : undefined;
     return {
       contactId: r.contact_id,
-      name: r.name,
-      phone: r.phone,
-      email: r.email,
-      telegram: r.telegram,
+      ...presentContact(r),
       state: r.state,
       reason: r.reason,
       notBefore: r.not_before,

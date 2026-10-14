@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { withTenant } from '../../db/client.js';
+import { hiddenContactByAddress } from '../../modules/campaigns/index.js';
 import {
   getChannelConfig,
   redactConfig,
@@ -12,6 +13,7 @@ import {
   type MessageRow,
 } from '../../modules/messaging/index.js';
 import { CHANNELS, PURPOSES } from '../../spine/contacts/normalize.js';
+import { resolve as resolveCompany } from '../../spine/registry/index.js';
 import type { AuthVars } from '../middleware/auth.js';
 
 const channel = z.enum(CHANNELS);
@@ -125,6 +127,15 @@ messaging.put('/v1/templates/:name', async (c) => {
 messaging.post('/v1/messages', async (c) => {
   const parsed = sendBody.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+  // Outreach is what a campaign sends to the buyers a discovery audience
+  // resolved to, whose addresses the tenant never holds. A single send names
+  // an address, so it is marketing or transactional.
+  if (parsed.data.purpose === 'outreach') {
+    return c.json(
+      { error: 'purpose_not_allowed', message: 'outreach is sent by a campaign to a discovery audience only' },
+      400,
+    );
+  }
 
   const tenantId = c.get('tenantId');
   const { address: _legacy, contact: _contact, evaluateAt, at, ...rest } = parsed.data;
@@ -142,22 +153,41 @@ messaging.post('/v1/messages', async (c) => {
   return c.json({ message: serialise(row) }, row.status === 'queued' ? 202 : 200);
 });
 
+/**
+ * A message to a hidden contact (an outreach contact the engine made for a
+ * found buyer) shows its company and no address: the tenant never holds the
+ * buyer's number. Every other message shows its address, as before.
+ */
 messaging.get('/v1/messages/:id', async (c) => {
+  const tenantId = c.get('tenantId');
   const id = z.string().uuid().safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'not found' }, 404);
 
-  const [row] = await withTenant(
-    c.get('tenantId'),
-    (tx) => tx<MessageRow[]>`select * from messages where id = ${id.data}`,
-  );
-  return row ? c.json({ message: serialise(row) }) : c.json({ error: 'not found' }, 404);
+  const found = await withTenant(tenantId, async (tx) => {
+    const [row] = await tx<MessageRow[]>`select * from messages where id = ${id.data}`;
+    if (!row) return null;
+    const hidden = row.address ? await hiddenContactByAddress(tx, tenantId, row.address) : undefined;
+    const company = row.company_id ? await resolveCompany(tx, row.company_id) : undefined;
+    return {
+      row,
+      hidden: hidden !== undefined,
+      company: company ? { id: company.id, name: company.name } : null,
+    };
+  });
+  return found
+    ? c.json({ message: serialise(found.row, found) })
+    : c.json({ error: 'not found' }, 404);
 });
 
-function serialise(row: MessageRow) {
+function serialise(
+  row: MessageRow,
+  view: { hidden: boolean; company: { id: string; name: string } | null } = { hidden: false, company: null },
+) {
   return {
     id: row.id,
     channel: row.channel,
-    address: row.address,
+    address: view.hidden ? null : row.address,
+    company: view.company,
     region: row.region,
     purpose: row.purpose,
     template: row.template_name,

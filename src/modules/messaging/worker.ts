@@ -1,5 +1,5 @@
 import { db, withTenant } from '../../db/client.js';
-import type { Channel } from '../../spine/contacts/normalize.js';
+import { isPromotional, type Channel, type Purpose } from '../../spine/contacts/normalize.js';
 import { emit } from '../../spine/events/index.js';
 import { adapterFor } from './adapters/index.js';
 import { MessagingError } from './errors.js';
@@ -66,11 +66,11 @@ export async function processSend(
       to: message.address,
       body: message.body,
       sender: config.sender,
-      purpose: message.purpose as 'transactional' | 'marketing',
+      purpose: message.purpose as Purpose,
       ...(template?.subject ? { subject: await subjectFor(message, template) } : {}),
       ...(template?.provider_ref ? { providerRef: template.provider_ref } : {}),
       variables: message.variables,
-      ...(message.purpose === 'marketing' && message.channel === 'email'
+      ...(isPromotional(message.purpose as Purpose) && message.channel === 'email'
         ? { unsubscribeUrl: unsubscribeUrlFor(message.tenant_id, 'email', message.address) }
         : {}),
     });
@@ -146,7 +146,7 @@ async function fallBack(message: MessageRow): Promise<void> {
         tenantId: message.tenant_id,
         contact: message.contact,
         channel: next,
-        purpose: message.purpose as 'transactional' | 'marketing',
+        purpose: message.purpose as Purpose,
         template: message.template_name,
         variables: message.variables,
         parentMessageId: message.id,
