@@ -108,6 +108,7 @@ export type Overview = {
   webhooks: { pending?: number; failed?: number };
   reservations: { open: number; expiringWithin15m: number };
   discovery: { searches: number; invitesFromSearch: number };
+  serper: SerperSpend;
   campaigns: {
     scheduled: number;
     running: number;
@@ -115,6 +116,51 @@ export type Overview = {
     sentInWindow: number;
     blockedInWindow: number;
   };
+};
+
+/** What Serper cost, as the engine sums it from the per-query events. */
+export type Spend = { queries: number; serperCalls: number; cacheHits: number; credits: number; usd: number };
+
+export type SpendTotals = Spend & {
+  /** Searches (jobs) that made at least one query. */
+  searches: number;
+  cacheRate: number | null;
+  perSearch: { credits: number; usd: number } | null;
+  perQuery: { credits: number; usd: number } | null;
+  perCall: { credits: number; usd: number } | null;
+};
+
+export type SerperSpend = {
+  usdPerCredit: number;
+  window: SpendTotals;
+  allTime: SpendTotals;
+  byKind: ({ kind: string } & Spend)[];
+  byCountry: ({ country: string } & Spend)[];
+  byTenant: ({ tenantId: string; tenantName: string } & Spend)[];
+  topSearches: ({ jobId: string; product: string; side: string; countries: string[]; tenantId: string; tenantName: string } & Spend)[];
+  series: { bucket: 'hour' | 'day'; points: ({ at: string } & Spend)[] };
+};
+
+/** One query a search made, priced. */
+export type DiscoveryQuery = {
+  id: string;
+  at: string;
+  tenantId: string;
+  tenantName: string;
+  jobId: string;
+  product: string | null;
+  side: string | null;
+  taskId: string;
+  country: string;
+  persona: string | null;
+  kind: 'web' | 'places';
+  q: string;
+  gl: string;
+  hl: string;
+  cached: boolean;
+  credits: number;
+  usd: number;
+  hits: number;
 };
 
 export type EventRow = {
@@ -382,6 +428,7 @@ export type DiscoveryJobRow = {
   countries: string[];
   status: string;
   counts: Record<string, number>;
+  spend: Spend;
   createdAt: string;
   finishedAt: string | null;
 };
@@ -396,6 +443,7 @@ export type DiscoveryTask = {
   /** The stage running now, or the last one run. */
   stage: string | null;
   counts: Record<string, number>;
+  spend: Spend;
   error: string | null;
   attempts: number;
   waiting?: Waiting;
@@ -613,6 +661,7 @@ export const api = {
     get<Page<DiscoveryResult>>(`/discovery/jobs/${id}/results`, params),
   discoveryCandidates: (id: string, params: Params) =>
     get<Page<DiscoveryCandidate>>(`/discovery/jobs/${id}/candidates`, params),
+  discoveryQueries: (params: Params) => get<Page<DiscoveryQuery>>('/discovery/queries', params),
   discoveryCountries: () => get<{ items: CountryRow[] }>('/discovery/countries'),
   saveDiscoveryCountry: (code: string, settings: unknown) =>
     send<{ country: CountryRow }>(`/discovery/countries/${encodeURIComponent(code)}`, { settings }),

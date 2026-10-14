@@ -1,6 +1,8 @@
 import { db } from '../../../db/client.js';
+import { usdPerCredit } from '../../../modules/discovery/index.js';
 import { queueState } from '../webhook-endpoints.js';
 import { campaignSection } from './campaigns.js';
+import * as spend from './search-spend.js';
 import type { Window } from './shared.js';
 
 /**
@@ -10,7 +12,7 @@ import type { Window } from './shared.js';
 export async function overview(window: Window) {
   const sql = db();
 
-  const [health, queue, messages, blockedReasons, tenants, webhooks, reservations, discovery, campaigns] =
+  const [health, queue, messages, blockedReasons, tenants, webhooks, reservations, discovery, campaigns, serper] =
     await Promise.all([
       healthSection(),
       queueSection(window),
@@ -39,6 +41,7 @@ export async function overview(window: Window) {
       reservationSection(),
       discoverySection(window),
       campaignSection(window),
+      serperSection(window),
     ]);
 
   return {
@@ -53,6 +56,7 @@ export async function overview(window: Window) {
     reservations,
     discovery,
     campaigns,
+    serper,
   };
 }
 
@@ -203,6 +207,23 @@ async function discoverySection(window: Window) {
     searches: Number(row?.searches ?? 0),
     invitesFromSearch: Number(row?.from_search ?? 0),
   };
+}
+
+/**
+ * What Serper cost, from the per-query events: this window and all time,
+ * with the averages the operator asks for, then the window broken down.
+ */
+async function serperSection(window: Window) {
+  const [inWindow, allTime, byKind, byCountry, byTenant, topSearches, series] = await Promise.all([
+    spend.totals(window),
+    spend.totals(null),
+    spend.byKind(window),
+    spend.byCountry(window),
+    spend.byTenant(window),
+    spend.topSearches(window),
+    spend.series(window),
+  ]);
+  return { usdPerCredit: usdPerCredit(), window: inWindow, allTime, byKind, byCountry, byTenant, topSearches, series };
 }
 
 async function countsBy(query: Promise<{ key: string; n: string }[]>): Promise<Record<string, number>> {

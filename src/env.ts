@@ -38,6 +38,9 @@ const schema = z.object({
   DISCOVERY_MAX_DEFERRALS: z.coerce.number().int().min(0).default(5),
   SERPER_API_KEY: z.string().optional(),
   SERPER_RPS: z.coerce.number().min(0.1).max(50).default(4),
+  // What one Serper credit costs, for the operator's spend figures. The
+  // smallest pack is USD 50 for 50,000 credits; set it to the pack you bought.
+  SERPER_USD_PER_CREDIT: z.coerce.number().min(0).default(0.001),
   SEARCH_CACHE_DAYS: z.coerce.number().int().min(0).default(30),
   DISCOVERY_MAX_QUERIES: z.coerce.number().int().min(1).default(30),
   DISCOVERY_MAX_QUERIES_PER_JOB: z.coerce.number().int().min(1).default(60),

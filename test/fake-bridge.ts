@@ -81,6 +81,7 @@ export function clearProviders(): void {
     'CLAUDE_RUNNER_TOKEN',
     'SERPER_API_KEY',
     'SERPER_RPS',
+    'SERPER_USD_PER_CREDIT',
     'DISCOVERY_MAX_QUERIES',
     'DISCOVERY_MAX_QUERIES_PER_JOB',
     'FIRECRAWL_URL',

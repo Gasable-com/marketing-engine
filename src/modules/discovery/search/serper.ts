@@ -24,6 +24,9 @@ export type PlaceHit = {
 
 export type SearchQuery = { q: string; gl: string; hl: string; page?: number };
 
+/** The trimmed hits, and what Serper said the call cost in its own credits. */
+export type Answer<T> = { hits: T[]; credits: number };
+
 /** Tests answer from saved responses; nothing else replaces it. */
 let fetcher: typeof fetch = (...args) => fetch(...args);
 export function setSerperFetch(f: typeof fetch | null): void {
@@ -83,10 +86,14 @@ async function post(path: string, body: Record<string, unknown>): Promise<Record
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
-export async function searchWeb(query: SearchQuery): Promise<WebHit[]> {
+// Every Serper answer carries `credits` (1 for ten results, 2 for more). One
+// when it says nothing: no call is free, and a missing field is not a refund.
+const creditsOf = (json: Record<string, unknown>): number => num(json['credits']) ?? 1;
+
+export async function searchWeb(query: SearchQuery): Promise<Answer<WebHit>> {
   const json = await post('/search', { q: query.q, gl: query.gl, hl: query.hl, page: query.page ?? 1 });
   const organic = Array.isArray(json['organic']) ? (json['organic'] as Record<string, unknown>[]) : [];
-  return organic
+  const hits = organic
     .map((o, i) => ({
       title: str(o['title']) ?? '',
       link: str(o['link']) ?? '',
@@ -94,12 +101,13 @@ export async function searchWeb(query: SearchQuery): Promise<WebHit[]> {
       position: num(o['position']) ?? i + 1,
     }))
     .filter((h) => h.link);
+  return { hits, credits: creditsOf(json) };
 }
 
-export async function searchPlaces(query: SearchQuery): Promise<PlaceHit[]> {
+export async function searchPlaces(query: SearchQuery): Promise<Answer<PlaceHit>> {
   const json = await post('/places', { q: query.q, gl: query.gl, hl: query.hl });
   const places = Array.isArray(json['places']) ? (json['places'] as Record<string, unknown>[]) : [];
-  return places
+  const hits = places
     .map((p) => ({
       title: str(p['title']) ?? '',
       address: str(p['address']),
@@ -112,4 +120,5 @@ export async function searchPlaces(query: SearchQuery): Promise<PlaceHit[]> {
       ratingCount: num(p['ratingCount']),
     }))
     .filter((p) => p.title && (p.cid || p.website));
+  return { hits, credits: creditsOf(json) };
 }

@@ -1036,7 +1036,23 @@ Everything a dashboard's front page needs, in one call:
   "reservations": { "open": 2, "expiringWithin15m": 1 },
   "discovery": { "searches": 33, "invitesFromSearch": 4 },
   "campaigns": { "scheduled": 2, "running": 1, "recipientsPending": 340,
-                 "sentInWindow": 1200, "blockedInWindow": 45 }
+                 "sentInWindow": 1200, "blockedInWindow": 45 },
+  "serper": { "usdPerCredit": 0.001,
+              "window": { "searches": 2, "queries": 48, "serperCalls": 31, "cacheHits": 17,
+                          "credits": 33, "usd": 0.033, "cacheRate": 0.354,
+                          "perSearch": { "credits": 16.5, "usd": 0.0165 },
+                          "perQuery": { "credits": 0.69, "usd": 0.000688 },
+                          "perCall": { "credits": 1.06, "usd": 0.001065 } },
+              "allTime": { "…": "the same shape" },
+              "byKind": [{ "kind": "web", "queries": 28, "serperCalls": 19, "cacheHits": 9,
+                           "credits": 21, "usd": 0.021 }],
+              "byCountry": [{ "country": "SA", "…": "the same counts" }],
+              "byTenant": [{ "tenantId": "…", "tenantName": "…", "…": "the same counts" }],
+              "topSearches": [{ "jobId": "…", "product": "Microsilica (silica fume)", "side": "buyers",
+                                "countries": ["SA"], "tenantId": "…", "tenantName": "…",
+                                "…": "the same counts" }],
+              "series": { "bucket": "hour", "points": [{ "at": "…", "queries": 3, "serperCalls": 2,
+                                                           "cacheHits": 1, "credits": 2, "usd": 0.002 }] } }
 }
 ```
 
@@ -1046,6 +1062,19 @@ for almost every block and would tell you nothing.
 
 `campaigns.sentInWindow` and `blockedInWindow` count campaign messages created
 in the window; `recipientsPending` is across every run still in progress.
+
+`serper` is what the web searches cost, summed from the
+`discovery.task.queried` events: one per query, with the credits Serper
+charged (0 when the cache answered, 1 when Serper said nothing). `searches`
+counts jobs that made at least one query; `perSearch`, `perQuery` and
+`perCall` are averages over searches, queries and Serper calls, `null` when
+there is nothing to average; `cacheRate` is `cacheHits / queries`. Money is
+credits × `SERPER_USD_PER_CREDIT` (default `0.001`, the smallest pack) worked
+out when read, so a corrected price corrects every figure, past and future.
+`window` and `allTime` share a shape; the breakdowns are for the window:
+`byKind` (`web`, `places`), `byCountry` (up to 20, costliest first), `byTenant`,
+`topSearches` (the five costliest jobs, named) and `series` (hourly for a
+window of up to two days, daily beyond, every bucket present).
 
 `queue` comes from pg-boss's own tables; `completedInWindow` reads its archive
 too, because finished jobs move there.
@@ -1203,7 +1232,10 @@ characters.
 
 Newest first. `status` is `planning`, `running`, `done` or `failed`. Each row:
 `id`, `tenantId`, `tenantName`, `product`, `category`, `side`,
-`identifiedName`, `countries`, `status`, `counts`, `createdAt`, `finishedAt`.
+`identifiedName`, `countries`, `status`, `counts`, `spend`, `createdAt`,
+`finishedAt`. `spend` is what the job's searching cost, from its
+`discovery.task.queried` events: `queries`, `serperCalls`, `cacheHits`,
+`credits` and `usd` (credits × `SERPER_USD_PER_CREDIT`).
 
 #### `GET /internal/discovery/jobs/:id`
 
@@ -1211,9 +1243,13 @@ Newest first. `status` is `planning`, `running`, `done` or `failed`. Each row:
 { "job": { "id": "…", "tenantId": "…", "tenantName": "…", "product": "ديزل",
            "category": null, "side": "suppliers", "countries": ["SA", "AE"],
            "terms": [], "resultLimit": 50, "status": "done",
-           "counts": { "ranked": 2 }, "createdAt": "…", "finishedAt": "…" },
+           "counts": { "ranked": 2 },
+           "spend": { "queries": 30, "serperCalls": 20, "cacheHits": 10, "credits": 22, "usd": 0.022 },
+           "createdAt": "…", "finishedAt": "…" },
   "tasks": [{ "id": "…", "country": "SA", "status": "done", "stage": "rank",
-              "counts": { "ranked": 2 }, "error": null, "attempts": 1,
+              "counts": { "ranked": 2 },
+              "spend": { "queries": 30, "serperCalls": 20, "cacheHits": 10, "credits": 22, "usd": 0.022 },
+              "error": null, "attempts": 1,
               "createdAt": "…", "startedAt": "…", "finishedAt": "…" }] }
 ```
 
@@ -1368,8 +1404,11 @@ personas) or drop, with a reason. An exhausted or refused Serper key fails the
 task at once with `search provider refused: …`.
 
 Task counts from these stages: `queries`, `queries_capped`, `serper_calls`,
-`cache_hits`, `hits`, `candidates`, `dropped_shared`, `dropped_blocked`,
-`kept`, `dropped`, `triage_failed`, `claude_calls`.
+`serper_credits`, `cache_hits`, `hits`, `candidates`, `dropped_shared`,
+`dropped_blocked`, `kept`, `dropped`, `triage_failed`, `claude_calls`. The
+counts are for display; what a search cost is read from its events (`spend`,
+the queries route and the overview), which a task that failed half-way still
+has.
 
 **Rule kinds.** `discovery.country` is a value rule, one region row per
 country, read for the task's country: `{"if": [true, { gl, languages, suffix,
@@ -1400,6 +1439,17 @@ a `full` profile or 0.05 for a `thin` one, and 0.1 for freshness: full within
 90 days of `profiledAt`, falling to nothing at 365. Each signal that scored is
 one reason.
 
+#### `GET /internal/discovery/queries?jobId=&tenantId=&country=&kind=&cached=`
+
+Every query the searches made, newest first, each priced: the log the spend
+figures are summed from. With `jobId` it is the job's whole history; without
+it the window applies (default `7d`). `kind` is `web` or `places`; `cached`
+is `true` or `false`. Paged with `limit` and `cursor` (the last row's `id`).
+Each row: `id`, `at`, `tenantId`, `tenantName`, `jobId`, `product` (the
+identified name, else as entered), `side`, `taskId`, `country`, `persona`
+(the persona's name, `null` when it is gone), `kind`, `q`, `gl`, `hl`,
+`cached`, `credits` (0 when cached), `usd` and `hits`.
+
 #### Events
 
 | Event | Payload |
@@ -1413,6 +1463,7 @@ one reason.
 | `discovery.job.planned` | `jobId`, `product` (the identified name), `personas` (names) |
 | `discovery.job.deferred` | `jobId`, `resetsAt` |
 | `discovery.task.deferred` | `jobId`, `taskId`, `country`, `resetsAt` |
+| `discovery.task.queried` | one per query, as it happens: `jobId`, `taskId`, `country`, `personaId`, `provider` (`serper`), `kind` (`web`, `places`), `q`, `gl`, `hl`, `page`, `cached`, `credits` (what Serper charged; 0 from the cache), `hits` |
 
 All of them have `subjectType: "discovery_job"` and the job's id as `subjectId`,
 so one filter reads a job's whole history. Every rank also writes a
@@ -1457,6 +1508,7 @@ here was later rolled back.
 `discovery.job.created` · `discovery.job.planned` · `discovery.job.deferred` ·
 `discovery.rfq.created` · `discovery.rfq.finished` ·
 `discovery.task.finished` · `discovery.task.failed` · `discovery.task.deferred` ·
+`discovery.task.queried` ·
 `discovery.job.finished` · `invite.sent` ·
 `invite.accepted` · `promo.created` · `promo.reserved` · `promo.settled` ·
 `promo.released` · `contact.upserted` · `audience.saved` · `audience.deleted` ·

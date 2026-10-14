@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
+import { resetEnv } from '../src/env.js';
 import { runTask } from '../src/modules/discovery/index.js';
 import { countryPrompt, extractPrompt, identifyPrompt, personasPrompt, triagePrompt } from '../src/modules/discovery/prompts.js';
 import { saveMadeSettings } from '../src/modules/discovery/search/country.js';
@@ -163,7 +164,10 @@ async function search(body: Record<string, unknown>) {
   expect(created.status).toBe(201);
   await drive();
   const jobId = created.body.job.id;
-  const detail = await call<{ job: Record<string, unknown>; tasks: { country: string; status: string; error: string | null; counts: Record<string, number> }[] }>(
+  const detail = await call<{
+    job: Record<string, unknown> & { spend: Spend };
+    tasks: { country: string; status: string; error: string | null; counts: Record<string, number>; spend: Spend }[];
+  }>(
     'GET',
     `/internal/discovery/jobs/${jobId}`,
   );
@@ -172,6 +176,44 @@ async function search(body: Record<string, unknown>) {
 }
 
 const byDomain = (list: Candidate[], domain: string) => list.find((c) => c.domain === domain);
+
+type Spend = { queries: number; serperCalls: number; cacheHits: number; credits: number; usd: number };
+type Average = { credits: number; usd: number } | null;
+type Totals = Spend & { searches: number; cacheRate: number | null; perSearch: Average; perQuery: Average; perCall: Average };
+type Query = {
+  id: string;
+  at: string;
+  tenantName: string;
+  jobId: string;
+  product: string;
+  taskId: string;
+  country: string;
+  persona: string | null;
+  kind: string;
+  q: string;
+  gl: string;
+  hl: string;
+  cached: boolean;
+  credits: number;
+  usd: number;
+  hits: number;
+};
+type Serper = {
+  usdPerCredit: number;
+  window: Totals;
+  allTime: Totals;
+  byKind: ({ kind: string } & Spend)[];
+  byCountry: ({ country: string } & Spend)[];
+  byTenant: ({ tenantId: string; tenantName: string } & Spend)[];
+  topSearches: ({ jobId: string; product: string; side: string; countries: string[]; tenantName: string } & Spend)[];
+  series: { bucket: string; points: ({ at: string } & Spend)[] };
+};
+
+const queryLog = async (params: string) =>
+  (await call<{ items: Query[] }>('GET', `/internal/discovery/queries?${params}`)).body.items;
+
+/** The Arabic fixture answers with 2 credits, every other one with 1. */
+const charged = () => serper.calls.reduce((n, c) => n + (/^توريد ديزل/.test(c.q) ? 2 : 1), 0);
 
 beforeAll(async () => {
   await bridge.start();
@@ -534,5 +576,152 @@ describe('search', () => {
     expect(await seen(TENANT_B)).toHaveLength(0);
     const cache = await withTenant(TENANT_B, (tx) => tx`select id from search_queries`);
     expect(cache.length).toBeGreaterThan(0);
+  });
+});
+
+describe('cost', () => {
+  it('records every query with the credits Serper charged, and prices them', async () => {
+    const { jobId, detail } = await search({ product: 'diesel', side: 'suppliers' });
+    const counts = detail.tasks[0]!.counts;
+    const credits = charged();
+    expect(credits).toBeGreaterThan(counts['serper_calls']!);
+    expect(counts['serper_credits']).toBe(credits);
+
+    const log = await queryLog(`jobId=${jobId}`);
+    expect(log).toHaveLength(counts['queries']!);
+    expect(log.every((q) => !q.cached)).toBe(true);
+    expect(log.reduce((n, q) => n + q.credits, 0)).toBe(credits);
+    expect(log.find((q) => q.q === 'توريد ديزل')).toMatchObject({
+      kind: 'web',
+      gl: 'sa',
+      hl: 'ar',
+      country: 'SA',
+      credits: 2,
+      usd: 0.002,
+      hits: 2,
+      persona: 'Diesel distributors',
+      product: 'Diesel fuel',
+      tenantName: 'Tenant A',
+    });
+    expect(log.find((q) => q.q === 'diesel supplier Riyadh')).toMatchObject({ kind: 'places', credits: 1, usd: 0.001 });
+    // Newest first, like every feed.
+    expect([...log].sort((a, b) => Number(b.id) - Number(a.id)).map((q) => q.id)).toEqual(log.map((q) => q.id));
+
+    // The job, its task and the list all carry the same spend, from the same events.
+    const spend: Spend = { queries: counts['queries']!, serperCalls: counts['serper_calls']!, cacheHits: 0, credits, usd: credits / 1000 };
+    expect(detail.job.spend).toEqual(spend);
+    expect(detail.tasks[0]!.spend).toEqual(spend);
+    const list = await call<{ items: { id: string; spend: Spend }[] }>('GET', '/internal/discovery/jobs');
+    expect(list.body.items.find((j) => j.id === jobId)!.spend).toEqual(spend);
+
+    // The price is configuration, applied when read: halve it and every figure halves.
+    process.env.SERPER_USD_PER_CREDIT = '0.0005';
+    resetEnv();
+    const cheaper = await call<{ job: { spend: Spend } }>('GET', `/internal/discovery/jobs/${jobId}`);
+    expect(cheaper.body.job.spend).toEqual({ ...spend, usd: credits / 2000 });
+  });
+
+  it('counts a cached answer as a query that cost nothing', async () => {
+    const first = await search({ product: 'diesel', side: 'suppliers' });
+    const second = await search({ product: 'diesel', side: 'suppliers' });
+    const queries = first.detail.job.spend.queries;
+    expect(second.detail.job.spend).toEqual({ queries, serperCalls: 0, cacheHits: queries, credits: 0, usd: 0 });
+
+    const log = await queryLog(`jobId=${second.jobId}`);
+    expect(log).toHaveLength(queries);
+    expect(log.every((q) => q.cached && q.credits === 0 && q.usd === 0)).toBe(true);
+
+    // The filter tells paid from free, and the window applies without a job.
+    expect(await queryLog(`jobId=${second.jobId}&cached=false`)).toHaveLength(0);
+    expect(await queryLog('cached=true&window=24h')).toHaveLength(queries);
+    expect(await queryLog('cached=false&window=24h')).toHaveLength(queries);
+  });
+
+  it('keeps the queries a task paid for before it failed', async () => {
+    let calls = 0;
+    serper.override = () =>
+      ++calls === 3 ? new Response(JSON.stringify({ message: 'Not enough credits' }), { status: 400 }) : null;
+    const { jobId, detail } = await search({ product: 'diesel', side: 'suppliers' });
+    expect(detail.tasks[0]).toMatchObject({ status: 'failed', error: 'search provider refused: Not enough credits' });
+
+    const log = await queryLog(`jobId=${jobId}`);
+    expect(log).toHaveLength(2);
+    const credits = log[0]!.credits + log[1]!.credits;
+    expect(detail.job.spend).toEqual({ queries: 2, serperCalls: 2, cacheHits: 0, credits, usd: credits / 1000 });
+    expect(detail.tasks[0]!.spend).toEqual(detail.job.spend);
+    // The stage never finished, so the counts never saw it; the log did.
+    expect(detail.tasks[0]!.counts['serper_credits']).toBeUndefined();
+  });
+
+  it('charges one credit for an answer that does not say', async () => {
+    serper.override = (c) =>
+      c.path === '/places'
+        ? new Response(JSON.stringify({ places: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        : null;
+    const { jobId } = await search({ product: 'diesel', side: 'suppliers' });
+    const log = await queryLog(`jobId=${jobId}&kind=places`);
+    expect(log.length).toBeGreaterThan(0);
+    expect(log.every((q) => q.credits === 1 && q.usd === 0.001 && q.hits === 0)).toBe(true);
+  });
+
+  it('adds the spend up for the overview', async () => {
+    const diesel = await search({ product: 'diesel', side: 'suppliers' });
+    plan(MICROSILICA, READY_MIX);
+    const mix = await search({ product: 'Microsilica MS900D  1 MT', side: 'buyers' });
+    const a = diesel.detail.job.spend;
+    const b = mix.detail.job.spend;
+    const credits = a.credits + b.credits;
+    const queries = a.queries + b.queries;
+
+    const view = (await call<{ serper: Serper }>('GET', '/internal/overview?window=24h')).body.serper;
+    expect(view.usdPerCredit).toBe(0.001);
+    expect(view.window).toMatchObject({
+      searches: 2,
+      queries,
+      serperCalls: a.serperCalls + b.serperCalls,
+      cacheHits: 0,
+      credits,
+      usd: credits / 1000,
+      cacheRate: 0,
+    });
+    expect(view.window.perSearch!.usd).toBeCloseTo(view.window.usd / 2, 6);
+    expect(view.window.perSearch!.credits).toBeCloseTo(credits / 2, 2);
+    expect(view.window.perQuery!.usd).toBeCloseTo(view.window.usd / queries, 6);
+    expect(view.window.perCall!.credits).toBeCloseTo(credits / view.window.serperCalls, 2);
+    // Everything happened just now, so all time is this window.
+    expect(view.allTime).toEqual(view.window);
+
+    const kinds = Object.fromEntries(view.byKind.map((k) => [k.kind, k.credits]));
+    expect(Object.keys(kinds).sort()).toEqual(['places', 'web']);
+    expect(kinds['web']! + kinds['places']!).toBe(credits);
+    const { searches, cacheRate, perSearch, perQuery, perCall, ...spend } = view.window;
+    expect([searches, cacheRate, perSearch, perQuery, perCall].length).toBe(5);
+    expect(view.byCountry).toEqual([{ country: 'SA', ...spend }]);
+    expect(view.byTenant).toMatchObject([{ tenantId: TENANT_A, tenantName: 'Tenant A', credits }]);
+
+    // The costliest search first, named.
+    expect(view.topSearches.map((t) => t.jobId).sort()).toEqual([diesel.jobId, mix.jobId].sort());
+    expect(view.topSearches[0]!.credits).toBeGreaterThanOrEqual(view.topSearches[1]!.credits);
+    expect(view.topSearches.find((t) => t.jobId === diesel.jobId)).toMatchObject({
+      product: 'Diesel fuel',
+      side: 'suppliers',
+      countries: ['SA'],
+      tenantName: 'Tenant A',
+      ...a,
+    });
+
+    // Hourly over a day, every hour present, adding up to the total.
+    expect(view.series.bucket).toBe('hour');
+    expect(view.series.points).toHaveLength(25);
+    expect(view.series.points.reduce((n, p) => n + p.credits, 0)).toBe(credits);
+    expect(view.series.points.reduce((n, p) => n + p.queries, 0)).toBe(queries);
+
+    // A window with nothing in it says so, with no averages invented.
+    const empty = (await call<{ serper: Serper }>('GET', '/internal/overview?window=1h&until=2020-01-01T00:00:00Z')).body.serper;
+    expect(empty.window).toMatchObject({ searches: 0, queries: 0, credits: 0, usd: 0, cacheRate: null, perSearch: null, perQuery: null, perCall: null });
+    expect(empty.allTime.credits).toBe(credits);
+    expect(empty.byKind).toEqual([]);
+    expect(empty.topSearches).toEqual([]);
+    expect(empty.series.points).toHaveLength(2);
   });
 });

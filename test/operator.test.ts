@@ -204,6 +204,12 @@ describe('overview', () => {
       webhooks: Record<string, number>;
       reservations: { open: number; expiringWithin15m: number };
       discovery: { searches: number };
+      serper: {
+        usdPerCredit: number;
+        window: { credits: number; usd: number; perSearch: unknown };
+        allTime: { credits: number };
+        series: { bucket: string; points: unknown[] };
+      };
     }>(await op('/internal/overview?window=24h'));
 
     expect(view.health.db).toBe(true);
@@ -218,6 +224,12 @@ describe('overview', () => {
     expect(view.blockedReasons['suppressed']).toBe(1);
 
     expect(view.reservations).toEqual({ open: 1, expiringWithin15m: 1 });
+    // Nothing searched the web: no spend, and no average made up from none.
+    expect(view.serper.usdPerCredit).toBe(0.001);
+    expect(view.serper.window).toMatchObject({ credits: 0, usd: 0, perSearch: null });
+    expect(view.serper.allTime.credits).toBe(0);
+    expect(view.serper.series).toMatchObject({ bucket: 'hour' });
+    expect(view.serper.series.points).toHaveLength(25);
     expect(view.webhooks['failed']).toBe(1);
 
     const a = view.tenants.find((t) => t.tenantId === TENANT_A);
@@ -695,6 +707,7 @@ describe('secrets', () => {
       '/internal/jobs',
       '/internal/schedules',
       '/internal/metrics?series=messages',
+      '/internal/discovery/queries',
     ];
 
     for (const path of paths) {

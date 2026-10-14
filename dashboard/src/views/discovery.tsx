@@ -6,6 +6,7 @@ import {
   type DiscoveryJobDetail,
   type DiscoveryCandidate,
   type DiscoveryJobRow,
+  type DiscoveryQuery,
   type DiscoveryResult,
   type NewDiscoveryJob,
   type ProductIdentification,
@@ -14,7 +15,7 @@ import {
   type RowReading,
   type TenantRow,
 } from '../api.js';
-import { count } from '../format.js';
+import { count, usd } from '../format.js';
 import { go, href } from '../router.js';
 import {
   Badge,
@@ -118,6 +119,7 @@ function JobTable({ rows }: { rows: DiscoveryJobRow[] }) {
           <th>countries</th>
           <th>status</th>
           <th class="num">ranked</th>
+          <th class="num">Serper cost</th>
           <th>finished</th>
         </tr>
       </thead>
@@ -145,6 +147,10 @@ function JobTable({ rows }: { rows: DiscoveryJobRow[] }) {
               <Badge value={j.status} />
             </td>
             <td class="num">{j.counts['ranked'] === undefined ? '—' : count(j.counts['ranked'])}</td>
+            <td class="num">
+              {usd(j.spend.usd)}
+              <div class="muted">{count(j.spend.credits)} credits</div>
+            </td>
             <td>
               <Time iso={j.finishedAt} relative />
             </td>
@@ -729,6 +735,13 @@ export function DiscoveryJob({
               <Row k="counts">
                 <Counts counts={job.counts} />
               </Row>
+              <Row k="Serper cost">
+                {usd(job.spend.usd)}
+                <div class="muted">
+                  {count(job.spend.credits)} credits · {count(job.spend.queries)} queries, {count(job.spend.serperCalls)}{' '}
+                  to Serper, {count(job.spend.cacheHits)} from the cache
+                </div>
+              </Row>
               <Row k="created">
                 <Time iso={job.createdAt} />
               </Row>
@@ -807,6 +820,7 @@ export function DiscoveryJob({
                 <th>status</th>
                 <th>stage</th>
                 <th>counts</th>
+                <th class="num">Serper cost</th>
                 <th class="num">attempts</th>
                 <th>finished</th>
               </tr>
@@ -827,6 +841,10 @@ export function DiscoveryJob({
                   <td class="mono">{t.stage ?? <span class="muted">—</span>}</td>
                   <td>
                     <Counts counts={t.counts} />
+                  </td>
+                  <td class="num">
+                    {usd(t.spend.usd)}
+                    <div class="muted">{count(t.spend.credits)} credits</div>
                   </td>
                   <td class="num">{count(t.attempts)}</td>
                   <td>
@@ -853,6 +871,11 @@ export function DiscoveryJob({
 
         <Card title="what the search found" wide>
           <Candidates jobId={job.id} country={country} version={`${job.status}:${tasks.map((t) => `${t.status}${t.stage}`).join()}`} />
+        </Card>
+
+        <Card title="queries" wide>
+          {/* The spend is read from the same events, so it changes exactly when this list does. */}
+          <Queries jobId={job.id} country={country} version={JSON.stringify(job.spend)} />
         </Card>
       </div>
     </>
@@ -1022,6 +1045,73 @@ function Candidates({ jobId, country, version }: { jobId: string; country: strin
       {answer.state.status === 'error' ? <Failed error={answer.state.error} what="candidates" /> : null}
       {answer.state.status === 'ok' && rows.length === 0 ? <Empty what="candidates yet" /> : null}
       {rows.length > 0 ? <CandidateTable rows={rows} /> : null}
+      <Pager cursor={next} onMore={() => setCursor(next ?? undefined)} />
+    </>
+  );
+}
+
+/** Every query the search made, newest first, with what each one cost. */
+function Queries({ jobId, country, version }: { jobId: string; country: string; version: string }) {
+  const [rows, setRows] = useState<DiscoveryQuery[]>([]);
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+
+  useEffect(() => setCursor(undefined), [jobId, country, version]);
+
+  const answer = useAsync(
+    async () => ({ used: cursor, result: await api.discoveryQueries({ jobId, country, cursor, limit: 100 }) }),
+    [jobId, country, cursor, version],
+  );
+  useEffect(() => {
+    if (answer.state.status !== 'ok') return;
+    const { used, result } = answer.state.data;
+    setRows((current) => (used ? [...current, ...result.items] : result.items));
+  }, [answer.state]);
+  const next = answer.state.status === 'ok' ? answer.state.data.result.nextCursor : null;
+
+  return (
+    <>
+      {answer.state.status === 'loading' && rows.length === 0 ? <Loading what="queries" /> : null}
+      {answer.state.status === 'error' ? <Failed error={answer.state.error} what="queries" /> : null}
+      {answer.state.status === 'ok' && rows.length === 0 ? <Empty what="queries yet" /> : null}
+      {rows.length > 0 ? (
+        <table>
+          <thead>
+            <tr>
+              <th>when</th>
+              <th>country</th>
+              <th>on</th>
+              <th>query</th>
+              <th>persona</th>
+              <th>answered by</th>
+              <th class="num">hits</th>
+              <th class="num">credits</th>
+              <th class="num">cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((q) => (
+              <tr key={q.id}>
+                <td>
+                  <Time iso={q.at} relative />
+                </td>
+                <td class="mono">{q.country}</td>
+                <td>{q.kind === 'places' ? 'Maps' : 'web'}</td>
+                <td>
+                  {q.q}
+                  <div class="mono muted">
+                    {q.hl} · {q.gl}
+                  </div>
+                </td>
+                <td>{q.persona ?? <span class="muted">—</span>}</td>
+                <td>{q.cached ? <span class="muted">cache</span> : 'Serper'}</td>
+                <td class="num">{count(q.hits)}</td>
+                <td class="num">{q.credits === 0 ? <span class="zero">0</span> : count(q.credits)}</td>
+                <td class="num">{usd(q.usd)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
       <Pager cursor={next} onMore={() => setCursor(next ?? undefined)} />
     </>
   );

@@ -17,7 +17,9 @@ import {
   identifyProduct,
   readRow,
 } from '../../../modules/discovery/index.js';
-import { listQuery, page } from './shared.js';
+import { QUERIED_EVENT } from '../../../modules/discovery/index.js';
+import { queries, spendColumns, spendOf, spendOfJob, type SpendRow } from './search-spend.js';
+import { listQuery, page, resolveWindow, windowQuery } from './shared.js';
 
 /**
  * Discovery jobs for the operator: create a search for a tenant, and read
@@ -115,14 +117,20 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
   if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
 
   const sql = db();
-  const rows = await sql<Record<string, unknown>[]>`
+  const rows = await sql<(Record<string, unknown> & SpendRow)[]>`
     select j.id::text as id, j.tenant_id::text as "tenantId", t.name as "tenantName",
            j.product, j.category, j.side, j.countries, j.status, j.counts,
            j.identified->>'name' as "identifiedName",
            j.rfq_search_id::text as "rfqSearchId", j.requester_ref as "requesterRef",
-           j.created_at as "createdAt", j.finished_at as "finishedAt"
+           j.created_at as "createdAt", j.finished_at as "finishedAt",
+           s.queries, s.serper_calls, s.cache_hits, s.credits
     from discovery_jobs j
     join tenants t on t.id = j.tenant_id
+    left join lateral (
+      select ${spendColumns()}
+      from events e
+      where e.tenant_id = j.tenant_id and e.type = ${QUERIED_EVENT} and e.subject_id = j.id::text
+    ) s on true
     where true
       ${q.data.tenantId ? sql`and j.tenant_id = ${q.data.tenantId}` : sql``}
       ${q.data.status ? sql`and j.status = ${q.data.status}` : sql``}
@@ -130,7 +138,38 @@ discoveryOperator.get('/internal/discovery/jobs', async (c) => {
     order by j.created_at desc, j.id desc
     limit ${q.data.limit}
   `;
-  return c.json(page(rows, q.data.limit));
+  const items = rows.map(({ queries: n, serper_calls, cache_hits, credits, ...row }) => ({
+    ...row,
+    spend: spendOf({ queries: n, serper_calls, cache_hits, credits }),
+  }));
+  return c.json(page(items, q.data.limit));
+});
+
+/**
+ * Every query the searches made, newest first, each priced: the log the
+ * spend figures are summed from. A job's history is bounded by the job, so
+ * `jobId` ignores the window; without it the window applies, 7 days by default.
+ */
+discoveryOperator.get('/internal/discovery/queries', async (c) => {
+  const q = listQuery
+    .merge(windowQuery)
+    .extend({
+      cursor: z.string().regex(/^\d+$/).optional(),
+      jobId: z.string().uuid().optional(),
+      tenantId: z.string().uuid().optional(),
+      country: countryCode.optional(),
+      kind: z.enum(['web', 'places']).optional(),
+      cached: z
+        .enum(['true', 'false'])
+        .transform((v) => v === 'true')
+        .optional(),
+    })
+    .safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'invalid query', detail: q.error.issues }, 400);
+
+  const window = q.data.jobId ? null : resolveWindow(q.data, '7d');
+  const items = await queries({ ...q.data, window });
+  return c.json(page(items, q.data.limit));
 });
 
 /**
@@ -533,13 +572,20 @@ async function oneJob(id: string) {
     order by array_position(${job['countries'] as string[]}::text[], country), created_at
   `;
 
+  const spend = await spendOfJob(job['tenantId'] as string, id);
+
   return {
     job: {
       ...job,
       waiting: waiting(deferredUntil),
       live: job['status'] === 'planning' || job['status'] === 'running',
+      spend: spend.job,
     },
     personas,
-    tasks: tasks.map(({ deferredUntil: until, ...task }) => ({ ...task, waiting: waiting(until) })),
+    tasks: tasks.map(({ deferredUntil: until, ...task }) => ({
+      ...task,
+      waiting: waiting(until),
+      spend: spend.tasks.get(task['id'] as string) ?? spendOf(undefined),
+    })),
   };
 }
