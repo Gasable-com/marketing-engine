@@ -43,6 +43,23 @@ async function send<T>(path: string, body: unknown): Promise<T> {
 
 export type Params = Record<string, string | number | undefined>;
 
+/** How one country is searched: its discovery.country row, as the engine holds it. */
+export type CountryRow = {
+  code: string;
+  name: string;
+  /** The rule's name, which says who made it: seeded, Claude or an operator. */
+  rule: string;
+  enabled: boolean;
+  settings: {
+    gl: string;
+    languages: string[];
+    suffix: Record<string, string>;
+    names: string[];
+    cities: Record<string, string>[];
+  } | null;
+  createdAt: string;
+};
+
 function toQuery(params: Params): string {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== '');
   if (entries.length === 0) return '';
@@ -596,6 +613,9 @@ export const api = {
     get<Page<DiscoveryResult>>(`/discovery/jobs/${id}/results`, params),
   discoveryCandidates: (id: string, params: Params) =>
     get<Page<DiscoveryCandidate>>(`/discovery/jobs/${id}/candidates`, params),
+  discoveryCountries: () => get<{ items: CountryRow[] }>('/discovery/countries'),
+  saveDiscoveryCountry: (code: string, settings: unknown) =>
+    send<{ country: CountryRow }>(`/discovery/countries/${encodeURIComponent(code)}`, { settings }),
   rfqSearches: (params: Params) => get<Page<RfqSearchRow>>('/discovery/rfq-searches', params),
   rfqSearch: (id: string) => get<RfqSearchDetail>(`/discovery/rfq-searches/${id}`),
   createRfqSearch: (body: NewRfqSearch) => send<RfqSearchDetail>('/discovery/rfq-searches', body),

@@ -7,6 +7,7 @@ import {
   MAX_RESULT_LIMIT,
   MAX_RFQ_LINES,
   assertQuota,
+  countryCode,
   createJob,
   createRfqSearch,
   didYouMeanFor,
@@ -33,9 +34,8 @@ import type { AuthVars } from '../middleware/auth.js';
 export const portalDiscovery = new Hono<AuthVars>();
 
 const ref = z.string().trim().min(1).max(200);
-const country = z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'an ISO 3166-1 alpha-2 code');
 const countries = z
-  .array(country)
+  .array(countryCode)
   .min(1)
   .max(MAX_COUNTRIES)
   .refine((list) => new Set(list).size === list.length, 'each country once')

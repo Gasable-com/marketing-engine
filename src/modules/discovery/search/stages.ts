@@ -32,12 +32,14 @@ export async function personasOf(job: JobRow): Promise<PersonaRow[]> {
 /**
  * Every query one persona wants in this country, in the order to ask them:
  * web and Maps alternating, so a cap never leaves out Maps. Only terms in one
- * of the country's languages are asked.
+ * of the country's languages are asked, each in its own language: the one
+ * the personas step gave it, or for older personas, guessed from its script.
  */
 function queriesFor(persona: PersonaRow, country: CountrySettings): Planned[] {
+  const langOf = (term: string) => persona.term_langs?.[term] ?? (isArabic(term) ? 'ar' : 'en');
   const web: Planned[] = [];
   for (const term of persona.search_terms) {
-    const hl = isArabic(term) ? 'ar' : 'en';
+    const hl = langOf(term);
     if (!country.languages.includes(hl)) continue;
     web.push({ kind: 'web', q: term, hl, personaId: persona.id });
     const suffix = country.suffix[hl];
@@ -45,7 +47,7 @@ function queriesFor(persona: PersonaRow, country: CountrySettings): Planned[] {
   }
   const places: Planned[] = [];
   for (const term of persona.places_terms) {
-    const hl = isArabic(term) ? 'ar' : 'en';
+    const hl = langOf(term);
     if (!country.languages.includes(hl)) continue;
     places.push({ kind: 'places', q: term, hl, personaId: persona.id });
     for (const city of country.cities.slice(0, 3)) {

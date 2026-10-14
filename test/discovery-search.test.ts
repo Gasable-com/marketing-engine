@@ -2,6 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import { runTask } from '../src/modules/discovery/index.js';
+import { countryPrompt, extractPrompt, identifyPrompt, personasPrompt, triagePrompt } from '../src/modules/discovery/prompts.js';
+import { saveMadeSettings } from '../src/modules/discovery/search/country.js';
 import { createTenantRule } from '../src/spine/rules/index.js';
 import { setCompanyLookup, upsert } from '../src/spine/registry/index.js';
 import {
@@ -12,6 +14,7 @@ import {
   ok,
   queued,
   setProviders,
+  terms,
 } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
@@ -37,8 +40,8 @@ const DIESEL_PERSONAS = {
       description: 'Sell diesel in bulk.',
       roles: ['distributor'],
       sectors: ['fuel'],
-      searchTerms: ['diesel fuel supplier', 'توريد ديزل'],
-      placesTerms: ['diesel supplier'],
+      searchTerms: terms('diesel fuel supplier', 'توريد ديزل'),
+      placesTerms: terms('diesel supplier'),
       signals: ['bulk diesel delivery'],
     },
     {
@@ -46,8 +49,8 @@ const DIESEL_PERSONAS = {
       description: 'Wholesale fuel.',
       roles: ['wholesaler'],
       sectors: ['fuel'],
-      searchTerms: ['fuel wholesaler'],
-      placesTerms: [],
+      searchTerms: terms('fuel wholesaler'),
+      placesTerms: terms(),
       signals: ['wholesale fuel'],
     },
   ],
@@ -61,8 +64,8 @@ const READY_MIX = {
       description: 'Add it to high-strength mixes.',
       roles: ['manufacturer'],
       sectors: ['construction'],
-      searchTerms: ['ready mix concrete company'],
-      placesTerms: [],
+      searchTerms: terms('ready mix concrete company'),
+      placesTerms: terms(),
       signals: ['high strength concrete'],
     },
   ],
@@ -91,9 +94,34 @@ function triage(input: Record<string, unknown>) {
   };
 }
 
+/** Claude's description of a country no row describes yet, by code. */
+const COUNTRIES: Record<string, unknown> = {
+  EG: {
+    languages: ['ar'],
+    suffix: [{ lang: 'ar', name: 'مصر' }, { lang: 'en', name: 'Egypt' }],
+    names: ['arab republic of egypt', 'جمهورية مصر العربية'],
+    cities: [
+      { names: [{ lang: 'ar', name: 'القاهرة' }, { lang: 'en', name: 'Cairo' }] },
+      { names: [{ lang: 'ar', name: 'الإسكندرية' }, { lang: 'en', name: 'Alexandria' }, { lang: 'fr', name: 'Alexandrie' }] },
+    ],
+    timezone: 'Africa/Cairo',
+  },
+  TR: {
+    languages: ['tr', 'en'],
+    suffix: [{ lang: 'tr', name: 'Türkiye' }, { lang: 'en', name: 'Turkey' }],
+    names: ['turkey', 'türkiye cumhuriyeti'],
+    cities: [
+      { names: [{ lang: 'tr', name: 'İstanbul' }, { lang: 'en', name: 'Istanbul' }] },
+      { names: [{ lang: 'tr', name: 'Ankara' }, { lang: 'en', name: 'Ankara' }] },
+    ],
+    timezone: 'Not/A_Zone',
+  },
+};
+
 function plan(identified: unknown, personas: unknown) {
   bridge.handler = (task, input) => {
     if (task === 'identify') return ok(identified);
+    if (task === 'country') return ok(COUNTRIES[String(input['country'])]);
     if (task === 'personas') return ok(personas);
     if (task === 'triage') return ok(triage(input));
     return { status: 400, body: {} };
@@ -356,16 +384,138 @@ describe('search', () => {
     expect(detail.tasks[0]!.counts).toMatchObject({ kept: 6, triage_failed: 0, claude_calls: 2 });
   });
 
-  it('searches a country with no row in English only, and cleans every country’s place names from terms', async () => {
+  it('makes a new country’s settings once, saves them as its row, and searches it in its own languages and cities', async () => {
     plan(DIESEL, {
       personas: [
-        { ...DIESEL_PERSONAS.personas[0]!, searchTerms: ['diesel fuel supplier', 'diesel supplier Dubai', 'diesel makkah', 'توريد ديزل'] },
+        { ...DIESEL_PERSONAS.personas[0]!, searchTerms: terms('diesel fuel supplier', 'diesel supplier Dubai', 'diesel makkah', 'توريد ديزل') },
       ],
     });
     const { jobId } = await search({ product: 'diesel', side: 'suppliers', countries: ['EG'] });
-    expect(serper.calls.every((c) => c.hl === 'en' && c.gl === 'eg')).toBe(true);
+
+    expect(bridge.calls.filter((c) => c.task === 'country').map((c) => c.input)).toEqual([{ country: 'EG', name: 'Egypt' }]);
+    expect(bridge.calls.find((c) => c.task === 'personas')!.input).toMatchObject({
+      countries: [{ code: 'EG', name: 'Egypt' }],
+      languages: ['ar', 'en'],
+    });
+    const [row] = await db()<{ scope: string; name: string; document: unknown }[]>`
+      select scope, name, document from rules where kind = 'discovery.country' and region = 'EG'
+    `;
+    expect(row).toEqual({
+      scope: 'region',
+      name: 'Search Egypt (made by Claude)',
+      document: {
+        if: [
+          true,
+          {
+            gl: 'eg',
+            languages: ['ar', 'en'],
+            suffix: { ar: 'مصر', en: 'Egypt' },
+            names: ['arab republic of egypt', 'جمهورية مصر العربية', 'مصر', 'Egypt'],
+            // A name in a language Egypt is not searched in is dropped.
+            cities: [{ ar: 'القاهرة', en: 'Cairo' }, { ar: 'الإسكندرية', en: 'Alexandria' }],
+          },
+          null,
+        ],
+      },
+    });
+
+    // Egypt is now a region, in its own zone; a made-up zone falls back to UTC.
+    const zones = await db()`select code, timezone from regions where code in ('EG', 'TR') order by code`;
+    expect(zones).toEqual([{ code: 'EG', timezone: 'Africa/Cairo' }]);
+
+    // Arabic as well as English, each with Egypt's name and cities in its own script.
+    expect(serper.calls).toContainEqual({ path: '/search', q: 'توريد ديزل', gl: 'eg', hl: 'ar' });
+    expect(serper.calls).toContainEqual({ path: '/search', q: 'توريد ديزل مصر', gl: 'eg', hl: 'ar' });
+    expect(serper.calls).toContainEqual({ path: '/search', q: 'diesel fuel supplier Egypt', gl: 'eg', hl: 'en' });
+    expect(serper.calls).toContainEqual({ path: '/places', q: 'diesel supplier Cairo', gl: 'eg', hl: 'en' });
+    // Every country's place names are cleaned from the terms, the seeded ones too.
     const [persona] = await db()<{ search_terms: string[] }[]>`select search_terms from discovery_personas where job_id = ${jobId}`;
     expect(persona!.search_terms).toEqual(['diesel fuel supplier', 'توريد ديزل']);
+
+    // The next search in Egypt asks nothing.
+    bridge.calls = [];
+    await search({ product: 'diesel', side: 'suppliers', countries: ['EG'] });
+    expect(bridge.count('country')).toBe(0);
+    expect(bridge.count('personas')).toBe(1);
+  });
+
+  it('searches each term in its own language, and drops a term in a language the country does not use', async () => {
+    plan(DIESEL, {
+      personas: [
+        {
+          ...DIESEL_PERSONAS.personas[0]!,
+          searchTerms: [
+            { term: 'motorin tedarikçisi', lang: 'tr' },
+            { term: 'diesel fuel supplier', lang: 'en' },
+            { term: 'توريد ديزل', lang: 'ar' },
+          ],
+          placesTerms: [{ term: 'akaryakıt bayi', lang: 'tr' }],
+        },
+      ],
+    });
+    const { jobId } = await search({ product: 'diesel', side: 'suppliers', countries: ['TR'] });
+    expect(serper.calls).toContainEqual({ path: '/search', q: 'motorin tedarikçisi', gl: 'tr', hl: 'tr' });
+    expect(serper.calls).toContainEqual({ path: '/search', q: 'motorin tedarikçisi Türkiye', gl: 'tr', hl: 'tr' });
+    expect(serper.calls).toContainEqual({ path: '/search', q: 'diesel fuel supplier Turkey', gl: 'tr', hl: 'en' });
+    expect(serper.calls).toContainEqual({ path: '/places', q: 'akaryakıt bayi İstanbul', gl: 'tr', hl: 'tr' });
+    expect(serper.calls.some((c) => c.hl === 'ar')).toBe(false);
+    expect(await db()`select timezone from regions where code = 'TR'`).toEqual([{ timezone: 'UTC' }]);
+    const [persona] = await db()<{ search_terms: string[]; term_langs: Record<string, string> }[]>`
+      select search_terms, term_langs from discovery_personas where job_id = ${jobId}
+    `;
+    expect(persona).toEqual({
+      search_terms: ['motorin tedarikçisi', 'diesel fuel supplier'],
+      term_langs: { 'motorin tedarikçisi': 'tr', 'diesel fuel supplier': 'en', 'akaryakıt bayi': 'tr' },
+    });
+  });
+
+  it('lets the operator list every country and correct one, and the next search uses the correction', async () => {
+    await search({ product: 'diesel', side: 'suppliers', countries: ['EG'] });
+    const list = await call<{ items: { code: string; name: string; rule: string; settings: Record<string, unknown> }[] }>(
+      'GET',
+      '/internal/discovery/countries',
+    );
+    expect(list.body.items.map((i) => [i.code, i.name, i.rule])).toEqual([
+      ['AE', 'United Arab Emirates', 'Search the UAE'],
+      ['EG', 'Egypt', 'Search Egypt (made by Claude)'],
+      ['SA', 'Saudi Arabia', 'Search Saudi Arabia'],
+    ]);
+    const egypt = list.body.items.find((i) => i.code === 'EG')!.settings;
+
+    const wrongLanguage = await call('POST', '/internal/discovery/countries/EG', { settings: { ...egypt, suffix: { fr: 'Égypte' } } });
+    expect(wrongLanguage.status).toBe(400);
+    expect((await call('POST', '/internal/discovery/countries/XX', { settings: egypt })).status).toBe(400);
+
+    const saved = await call<{ country: { rule: string } }>('POST', '/internal/discovery/countries/EG', {
+      settings: { ...egypt, cities: [{ en: 'Port Said', ar: 'بورسعيد' }] },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.country.rule).toBe('Search Egypt (set by operator)');
+
+    bridge.calls = [];
+    serper.calls = [];
+    await search({ product: 'diesel', side: 'suppliers', countries: ['EG'] });
+    expect(bridge.count('country')).toBe(0);
+    expect(serper.calls).toContainEqual({ path: '/places', q: 'diesel supplier Port Said', gl: 'eg', hl: 'en' });
+    expect(serper.calls.some((c) => c.q.includes('Cairo'))).toBe(false);
+  });
+
+  it('writes one row when two jobs make the same country’s settings at once', async () => {
+    const settings = { gl: 'ke', languages: ['en', 'sw'], suffix: { en: 'Kenya' }, names: ['kenya'], cities: [{ en: 'Nairobi' }] };
+    const saved = await Promise.all([saveMadeSettings(TENANT_A, 'KE', settings), saveMadeSettings(TENANT_B, 'KE', settings)]);
+    expect(saved.sort()).toEqual([false, true]);
+    expect(await db()`select id from rules where kind = 'discovery.country' and region = 'KE'`).toHaveLength(1);
+  });
+
+  it('refuses a country code that does not exist', async () => {
+    const res = await call('POST', '/internal/discovery/jobs', { tenantId: TENANT_A, product: 'diesel', countries: ['XX'] });
+    expect(res.status).toBe(400);
+  });
+
+  it('frames no prompt as Saudi Arabia or the Gulf', () => {
+    for (const prompt of [identifyPrompt, countryPrompt, personasPrompt, triagePrompt, extractPrompt]) {
+      expect(prompt.system).not.toMatch(/saudi|gulf/i);
+    }
   });
 
   it('makes no Serper call without the bridge, and ranks as before', async () => {

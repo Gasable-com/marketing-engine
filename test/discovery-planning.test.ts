@@ -13,6 +13,7 @@ import {
   type TaskJob,
 } from '../src/modules/discovery/index.js';
 import { setCompanyLookup, upsert } from '../src/spine/registry/index.js';
+import { terms } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
 const app = createApp();
@@ -39,8 +40,8 @@ const PERSONAS = {
       description: 'They add it to high-strength mixes.',
       roles: ['manufacturer'],
       sectors: ['construction'],
-      searchTerms: ['ready mix concrete company', 'ready mix concrete Riyadh', 'مصنع خرسانة جاهزة'],
-      placesTerms: ['ready mix concrete', 'خرسانة جاهزة في الرياض'],
+      searchTerms: terms('ready mix concrete company', 'ready mix concrete Riyadh', 'مصنع خرسانة جاهزة'),
+      placesTerms: terms('ready mix concrete', 'خرسانة جاهزة في الرياض'),
       signals: ['mentions high-strength concrete'],
     },
     {
@@ -48,8 +49,8 @@ const PERSONAS = {
       description: 'Dense precast elements use it.',
       roles: ['manufacturer'],
       sectors: ['construction'],
-      searchTerms: ['precast concrete factory'],
-      placesTerms: ['precast concrete'],
+      searchTerms: terms('precast concrete factory'),
+      placesTerms: terms('precast concrete'),
       signals: ['makes precast elements'],
     },
   ],
@@ -261,7 +262,7 @@ describe('planning', () => {
     expect(await runPlan(plan!.data, { finalAttempt: false })).toBe('deferred');
 
     const job = await jobRow(created.body.job.id);
-    expect(job).toMatchObject({ status: 'planning', deferrals: 1, attempts: 0, stages_done: ['identify'] });
+    expect(job).toMatchObject({ status: 'planning', deferrals: 1, attempts: 0, stages_done: ['identify', 'countries'] });
     expect((job['deferred_until'] as Date).toISOString()).toBe(reset.toISOString());
 
     const waitingFor = await queued('discovery.plan');

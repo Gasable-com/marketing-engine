@@ -187,3 +187,56 @@ export async function deleteTenantRule(tx: Tx, id: string): Promise<boolean> {
   const deleted = await tx`delete from rules where id = ${id}`;
   return deleted.count > 0;
 }
+
+/**
+ * Save the value a region's row of a value kind holds, for a kind with one
+ * row per region (one `discovery.country` row per country), as a value rule
+ * `{"if": [true, value, null]}`. With `replace` false an existing row is left
+ * alone and null comes back, so two writers racing to create the same
+ * region's row make one: the lock serialises them for this transaction only.
+ *
+ * A region not known yet is added with `timezone`, the zone its contacts'
+ * sending windows are read in; a known region keeps its own.
+ *
+ * Region rows are the platform's: run it with the owning role (`asOwner`, or
+ * the operator's own connection). The tenant role can never write one.
+ */
+export async function saveRegionValue(
+  tx: Tx,
+  input: { kind: string; region: string; timezone: string; name: string; value: unknown; replace: boolean },
+): Promise<RuleRow | null> {
+  await tx`select pg_advisory_xact_lock(hashtext(${`rules:${input.kind}:${input.region}`}))`;
+  await tx`
+    insert into regions (code, timezone) values (${input.region}, ${input.timezone})
+    on conflict (code) do nothing
+  `;
+  const document = tx.json({ if: [true, input.value, null] } as never);
+  const [existing] = await tx<RuleRow[]>`
+    select * from rules
+    where scope = 'region' and kind = ${input.kind} and region = ${input.region}
+    order by created_at, id
+    limit 1
+  `;
+  if (existing && !input.replace) return null;
+  const [row] = existing
+    ? await tx<RuleRow[]>`
+        update rules set name = ${input.name}, document = ${document}, enabled = true
+        where id = ${existing.id}
+        returning *
+      `
+    : await tx<RuleRow[]>`
+        insert into rules (scope, region, kind, name, document)
+        values ('region', ${input.region}, ${input.kind}, ${input.name}, ${document})
+        returning *
+      `;
+  if (!row) throw new Error('rules.saveRegionValue wrote no row');
+  return row;
+}
+
+/** Every region row of one kind, by region: what an operator reviews. */
+export async function regionRows(tx: Tx, kind: string): Promise<RuleRow[]> {
+  return tx<RuleRow[]>`
+    select * from rules where scope = 'region' and kind = ${kind}
+    order by region, created_at, id
+  `;
+}

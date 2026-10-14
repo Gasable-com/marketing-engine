@@ -17,6 +17,9 @@ export const TENANT_B = '22222222-2222-2222-2222-222222222222';
 export async function resetDb(): Promise<void> {
   await migrate();
   await db()`delete from rules where scope = 'tenant'`;
+  // Country rows made by Claude or an operator during a test; the seeded SA and AE stay.
+  await db()`delete from rules where kind = 'discovery.country' and region not in ('SA', 'AE')`;
+  await db()`delete from regions where code not in (select region from rules where region is not null) and code not in ('SA', 'AE')`;
   await db()`
     truncate idempotency_keys, events, consent, suppression,
              messages, templates, tenant_channel_configs,

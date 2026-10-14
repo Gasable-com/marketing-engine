@@ -19,6 +19,7 @@ What the portal team needs to add discovery to the supplier and corporate portal
   - Your backend must take `requesterRef` from the logged-in session, never from the browser.
 - **Contacts are never returned.** A result has a company's **name, city and why it matches**: no phone, email, website or identifier.
 - **Results are shown at once.** There is no review gate.
+- **Any country.** `countries` takes any real ISO 3166-1 code, and every country is searched the same way: in the languages companies there use, with its name and main cities. The first search in a country the engine has not searched before spends a little longer on "understanding the product" while it learns the country once.
 
 ### Supplier: "Find buyers for this product"
 
@@ -37,7 +38,7 @@ What the portal team needs to add discovery to the supplier and corporate portal
    { "requesterRef": "sup-4411", "productRef": "cat-91822",
      "product": "Calcium Hypochlorite 70% Granular - 45 kg Drum",
      "category": "Water Treatment Chemicals", "side": "buyers",
-     "countries": ["SA"],                     // optional, default ["SA"]
+     "countries": ["SA"],                     // optional, default ["SA"]; any country's ISO code
      "identified": {…}                        // optional, from step 1
    }
    → 201 { "search": { "id", "status": "planning", "progress": "understanding the product", … } }

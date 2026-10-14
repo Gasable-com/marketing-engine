@@ -17,6 +17,9 @@ export type BridgeCall = { task: string; input: Record<string, unknown> };
 export type BridgeAnswer = { status: number; body: unknown };
 export type BridgeHandler = (task: string, input: Record<string, unknown>, n: number) => BridgeAnswer;
 
+/** Persona terms as the personas step gives them, each with its language. */
+export const terms = (...list: string[]) => list.map((term) => ({ term, lang: /[\u0600-\u06ff]/.test(term) ? 'ar' : 'en' }));
+
 export const ok = (output: unknown): BridgeAnswer => ({ status: 200, body: { output, durationMs: 1, costUsd: 0 } });
 
 export class FakeBridge {
