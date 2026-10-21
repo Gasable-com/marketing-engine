@@ -395,7 +395,7 @@ Suppliers and corporates search from the marketplace portal through these
 routes; `docs/PORTAL.md` is the full contract with examples. Every call carries
 `requesterRef`, the portal's own id for the user who asked; a search belongs to
 it, and any other `requesterRef` gets `404`. A result is `{ rank, company: { id,
-name }, city, country, persona, fit, why, phones, emails, website }`:
+name }, city, country, persona, fit, why, phones, emails, website, socials }`:
 
 - `why` is the persona's checked evidence as `claim: "quote"` or the ranking
   reasons, never a page address.
@@ -404,6 +404,9 @@ name }, city, country, persona, fit, why, phones, emails, website }`:
   `[]` when there is none. Opted-out addresses are included.
 - `website` is `https://` and the company's oldest domain (no `www.`, no path),
   or `null`.
+- `socials` is the company's social profiles grouped as on `GET
+  /v1/companies/:id` (LinkedIn first, a key only per network present, links
+  in the order recorded), or `{}`.
 - A result whose company was merged since shows the survivor's contacts.
 - No Maps id, CR or VAT number is ever in a `/v1` discovery response.
 
