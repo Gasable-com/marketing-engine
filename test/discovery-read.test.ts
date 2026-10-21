@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resetEnv } from '../src/env.js';
 import {
@@ -8,6 +9,7 @@ import {
   setFirecrawlFetch,
   setResolver,
   setTransport,
+  socialsIn,
   type Transport,
 } from '../src/modules/discovery/read/index.js';
 import { guardedGet } from '../src/modules/discovery/read/fetch.js';
@@ -23,6 +25,7 @@ const DNS: Record<string, string[]> = {
   'inside.example.com': ['172.18.0.1'],
   'mixed.example.com': ['93.184.216.34', '10.0.0.5'],
   'other.com': ['93.184.216.40'],
+  'sahel-supplies.com.sa': ['93.184.216.50'],
 };
 
 type Route = { status?: number; headers?: Record<string, string>; body?: string | AsyncIterable<Buffer> };
@@ -212,8 +215,9 @@ describe('Firecrawl', () => {
       return answer(url);
     });
   }
-  const scraped = (url: string, markdown: string, links: string[] = []) =>
-    Response.json({ success: true, data: { markdown, links, metadata: { url, sourceURL: url, statusCode: 200 } } });
+  /** Firecrawl's answer: the main content as markdown, the whole page as rawHtml. */
+  const scraped = (url: string, markdown: string, rawHtml?: string) =>
+    Response.json({ success: true, data: { markdown, rawHtml, metadata: { url, sourceURL: url, statusCode: 200 } } });
 
   beforeEach(() => {
     scrapes = [];
@@ -275,10 +279,11 @@ describe('Firecrawl', () => {
   it('reads the home page and chosen pages through Firecrawl', async () => {
     firecrawl((url) =>
       url === 'https://example.com/'
-        ? scraped(url, 'Home [من نحن](https://example.com/%D9%85%D9%86-%D9%86%D8%AD%D9%86)', [
-            'https://example.com/products',
-            'https://example.com/%D9%85%D9%86-%D9%86%D8%AD%D9%86',
-          ])
+        ? scraped(
+            url,
+            'Home',
+            '<a href="/products">Products</a><a href="/%D9%85%D9%86-%D9%86%D8%AD%D9%86">من نحن</a>',
+          )
         : scraped(url, `page ${url}`),
     );
     const read = await readSite({ url: 'https://example.com/', domain: 'example.com' });
@@ -289,6 +294,109 @@ describe('Firecrawl', () => {
     ]);
     expect(read).toMatchObject({ firecrawl: 3, fetchFallback: 0 });
     expect(connects).toEqual([]);
+  });
+
+  it('takes links from the whole page, and still reads a page that came without its HTML', async () => {
+    firecrawl((url) => scraped(url, 'Main content only'));
+    const read = await firecrawlScrape('https://example.com/', { domain: 'example.com' });
+    expect(read).toEqual({ finalUrl: 'https://example.com/', text: 'Main content only', links: [] });
+
+    let body: Record<string, unknown> = {};
+    setFirecrawlFetch(async (_input, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return scraped(body['url'] as string, 'x', '<a href="/products">P</a>');
+    });
+    expect(await firecrawlScrape('https://example.com/', { domain: 'example.com' })).toMatchObject({
+      links: [{ url: 'https://example.com/products', text: 'P' }],
+    });
+    expect(body).toMatchObject({ formats: ['markdown', 'rawHtml'], onlyMainContent: true });
+  });
+
+  it('finds the same socials as the plain fetch, and the product page the nav menu links', async () => {
+    const html = readFileSync(new URL('./fixtures/pages/social-home.html', import.meta.url), 'utf8');
+    const site = { url: 'https://sahel-supplies.com.sa/', domain: 'sahel-supplies.com.sa' };
+    const socials = [
+      'linkedin.com/company/sahel-supplies',
+      'instagram.com/sahelsupplies',
+      'x.com/sahelsupplies',
+      'facebook.com/sahelsupplies',
+      'youtube.com/channel/UCsahelSupplies01',
+    ];
+
+    // The main content alone, as onlyMainContent gives it: no nav, no footer.
+    firecrawl((url) =>
+      url === site.url
+        ? scraped(url, '# Sahel Industrial Supplies Co.\n\nWe supply bulk diesel delivery.', html)
+        : scraped(url, `page ${url}`),
+    );
+    const viaFirecrawl = await readSite(site);
+    expect(viaFirecrawl.pages.map((p) => p.url)).toEqual([
+      'https://sahel-supplies.com.sa/',
+      'https://sahel-supplies.com.sa/en/products/',
+      'https://sahel-supplies.com.sa/en/about-us/',
+      'https://sahel-supplies.com.sa/en/contact/',
+    ]);
+    expect(viaFirecrawl.firecrawl).toBe(4);
+    expect(socialsIn(viaFirecrawl.links)).toEqual(socials);
+
+    setFirecrawlFetch(null);
+    delete process.env.FIRECRAWL_URL;
+    resetEnv();
+    routes[site.url] = page(html);
+    const viaFetch = await readSite(site);
+    expect(viaFetch.fetchFallback).toBe(1);
+    expect(socialsIn(viaFetch.links)).toEqual(socials);
+  });
+});
+
+describe('socials by pattern', () => {
+  const links = (...urls: string[]) => urls.map((url) => ({ url, text: '' }));
+
+  it('keeps profiles in the order found, once each, home page first', async () => {
+    routes['https://example.com/'] = page(
+      '<a href="/about">About</a><a href="https://instagram.com/acme">i</a><a href="https://x.com/acme">x</a>',
+    );
+    routes['https://example.com/about'] = page(
+      '<a href="https://www.linkedin.com/company/acme/about/">l</a><a href="https://www.instagram.com/Acme/">i</a>',
+    );
+    const read = await readSite({ url: null, domain: 'example.com' });
+    expect(read.links.map((l) => l.url)).toEqual([
+      'https://example.com/about',
+      'https://instagram.com/acme',
+      'https://x.com/acme',
+      'https://www.linkedin.com/company/acme/about/',
+      'https://www.instagram.com/Acme/',
+    ]);
+    expect(socialsIn(read.links)).toEqual(['instagram.com/acme', 'x.com/acme', 'linkedin.com/company/acme']);
+  });
+
+  it('keeps at most 3 per network', () => {
+    expect(
+      socialsIn(
+        links(
+          'https://instagram.com/one',
+          'https://instagram.com/two',
+          'https://linkedin.com/company/acme',
+          'https://instagram.com/three',
+          'https://instagram.com/four',
+        ),
+      ),
+    ).toEqual(['instagram.com/one', 'instagram.com/two', 'linkedin.com/company/acme', 'instagram.com/three']);
+  });
+
+  it('leaves out share buttons, people and posts', () => {
+    expect(
+      socialsIn(
+        links(
+          'https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Facme.com',
+          'https://twitter.com/intent/tweet?url=https%3A%2F%2Facme.com',
+          'https://www.linkedin.com/shareArticle?mini=true&url=https%3A%2F%2Facme.com',
+          'https://sa.linkedin.com/in/someone',
+          'https://www.instagram.com/p/Cxyz123/',
+          'https://acme.com/products',
+        ),
+      ),
+    ).toEqual([]);
   });
 });
 

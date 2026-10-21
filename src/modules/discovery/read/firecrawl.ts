@@ -1,11 +1,15 @@
 import { env } from '../../../env.js';
 import { checkUrl, MAX_BYTES, readCapped, ReadError } from './fetch.js';
-import { markdownToText, type Link } from './text.js';
+import { linksIn, markdownToText, type Link } from './text.js';
 
 /**
  * The self-hosted Firecrawl, through plain fetch. Firecrawl follows redirects
  * and resolves names itself, so a page is used only when the URL it says it
  * ended on is still the candidate's domain and resolves to public addresses.
+ *
+ * The text is the page's main content, so Claude reads no menus; the links
+ * are the whole page's, from its raw HTML, since the nav and the footer are
+ * where the products page and the social profiles are linked.
  */
 
 const TIMEOUT_MS = 30_000;
@@ -25,7 +29,7 @@ type ScrapeBody = {
   success?: boolean;
   data?: {
     markdown?: string;
-    links?: unknown[];
+    rawHtml?: string;
     metadata?: { url?: string; sourceURL?: string; statusCode?: number };
   };
 };
@@ -44,7 +48,7 @@ export async function firecrawlScrape(url: string, opts: { domain: string }): Pr
         'content-type': 'application/json',
         authorization: `Bearer ${env().FIRECRAWL_API_KEY ?? 'none'}`,
       },
-      body: JSON.stringify({ url, formats: ['markdown', 'links'], onlyMainContent: true, timeout: TIMEOUT_MS }),
+      body: JSON.stringify({ url, formats: ['markdown', 'rawHtml'], onlyMainContent: true, timeout: TIMEOUT_MS }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok || !res.body) throw new Error();
@@ -70,34 +74,7 @@ export async function firecrawlScrape(url: string, opts: { domain: string }): Pr
     throw new ReadError('left the domain');
   }
   const markdown = data.markdown.slice(0, MAX_MARKDOWN);
-  const links = Array.isArray(data.links) ? data.links : [];
-  // Links are read from the markdown; the text Claude quotes is plain.
-  return { finalUrl, text: markdownToText(markdown), links: linksOf(markdown, links, finalUrl) };
-}
-
-/** Firecrawl's link list, with each link's text taken from the markdown where it appears. */
-function linksOf(markdown: string, urls: unknown[], baseUrl: string): Link[] {
-  const texts = new Map<string, string>();
-  for (const m of markdown.matchAll(/\[([^[\]\n]{0,500})\]\(([^)\s]{1,2000})/g)) {
-    const url = absolute(m[2] ?? '', baseUrl);
-    if (url && !texts.has(url)) texts.set(url, (m[1] ?? '').trim());
-  }
-  const all = [...urls.filter((u): u is string => typeof u === 'string'), ...texts.keys()];
-  const links: Link[] = [];
-  for (const raw of all) {
-    const url = absolute(raw, baseUrl);
-    if (url) links.push({ url, text: texts.get(url) ?? '' });
-  }
-  return links;
-}
-
-function absolute(href: string, baseUrl: string): string | null {
-  try {
-    const url = new URL(href, baseUrl);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    url.hash = '';
-    return url.href;
-  } catch {
-    return null;
-  }
+  // The same link reader as the plain fetch; a scrape without the HTML has no links, not no page.
+  const links = typeof data.rawHtml === 'string' ? linksIn(data.rawHtml, finalUrl) : [];
+  return { finalUrl, text: markdownToText(markdown), links };
 }

@@ -541,7 +541,7 @@ describe('read, extract, save, rank', () => {
       const html = SITES[`${u.host}${u.pathname}`];
       if (!html) return new Response('{"success":false}', { status: 404 });
       const text = html.toString().replace(/<[^>]+>/g, ' ');
-      return new Response(JSON.stringify({ success: true, data: { markdown: text, links: [], metadata: { url, sourceURL: url, statusCode: 200 } } }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, data: { markdown: text, rawHtml: html.toString(), metadata: { url, sourceURL: url, statusCode: 200 } } }), { status: 200 });
     });
     const { detail, results } = await search({ product: 'diesel', side: 'suppliers' });
     expect(scrapes).toBeGreaterThan(0);
