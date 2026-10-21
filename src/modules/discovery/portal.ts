@@ -1,13 +1,13 @@
 import type { Tx } from '../../db/client.js';
-import { companyContacts } from '../../spine/registry/index.js';
+import { companyContacts, type Socials } from '../../spine/registry/index.js';
 import type { JobRow, TaskRow } from './jobs.js';
 import type { RfqSearchRow } from './rfq.js';
 
 /**
  * What a portal user (a supplier or a corporate) sees of discovery: their own
  * searches, and for each result a company's name, city, why it matches and
- * the phones, emails and website the registry holds for it. Never a page
- * address, a Maps id, a CR or a VAT number.
+ * the phones, emails, website and social profiles the registry holds for it.
+ * Never a page address, a Maps id, a CR or a VAT number.
  *
  * Every read is scoped by RLS to the tenant, and here to the requester.
  */
@@ -45,6 +45,8 @@ export type PortalResult = {
   emails: string[];
   /** `https://` and the oldest domain; null when none is held. */
   website: string | null;
+  /** Profile links by network, LinkedIn first; `{}` when none is held. */
+  socials: Socials;
 };
 
 export type PortalRfqSearch = {
@@ -179,6 +181,7 @@ export async function portalResults(tx: Tx, jobId: string): Promise<PortalResult
       phones: held.phones,
       emails: held.emails,
       website: held.domains[0] ? `https://${held.domains[0]}` : null,
+      socials: held.socials,
     };
   });
 }
