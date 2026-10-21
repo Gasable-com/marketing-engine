@@ -25,8 +25,10 @@ export type ContactRow = {
   attributes: Record<string, unknown>;
   /**
    * An outreach contact the engine made for a found buyer (a discovery
-   * audience). The tenant never sees its addresses: it is not listed, a read
-   * by id answers as unknown, and wherever it appears its addresses are null.
+   * audience). Nothing about it says which address the engine sends to: it
+   * is not listed, a read by id answers as unknown, and wherever it appears
+   * its addresses are null. (The search results list every address the
+   * registry holds for the company, brief 27.)
    * It becomes a normal contact when the tenant stores the same address.
    */
   hidden: boolean;

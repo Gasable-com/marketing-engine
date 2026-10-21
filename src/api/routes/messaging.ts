@@ -128,8 +128,8 @@ messaging.post('/v1/messages', async (c) => {
   const parsed = sendBody.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
   // Outreach is what a campaign sends to the buyers a discovery audience
-  // resolved to, whose addresses the tenant never holds. A single send names
-  // an address, so it is marketing or transactional.
+  // resolved to, whose addresses the engine picks. A single send names an
+  // address, so it is marketing or transactional.
   if (parsed.data.purpose === 'outreach') {
     return c.json(
       { error: 'purpose_not_allowed', message: 'outreach is sent by a campaign to a discovery audience only' },
@@ -155,8 +155,9 @@ messaging.post('/v1/messages', async (c) => {
 
 /**
  * A message to a hidden contact (an outreach contact the engine made for a
- * found buyer) shows its company and no address: the tenant never holds the
- * buyer's number. Every other message shows its address, as before.
+ * found buyer) shows its company and no address: it never says which of the
+ * buyer's addresses the engine used. Every other message shows its address,
+ * as before.
  */
 messaging.get('/v1/messages/:id', async (c) => {
   const tenantId = c.get('tenantId');

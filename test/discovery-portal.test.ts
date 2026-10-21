@@ -3,6 +3,7 @@ import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import { setProfile } from '../src/modules/discovery/index.js';
 import { createTenantRule } from '../src/spine/rules/index.js';
+import { suppress } from '../src/spine/consent/index.js';
 import { setCompanyLookup, upsert } from '../src/spine/registry/index.js';
 import { FakeBridge, clearProviders, drive, ok, setProviders, terms } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb, tokenFor } from './helpers.js';
@@ -46,7 +47,7 @@ async function internal<T = Record<string, unknown>>(method: string, path: strin
   return { status: res.status, body: (await res.json()) as T };
 }
 
-/** A pool of three companies with contacts the portal must never see. */
+/** A pool of three companies, each with a domain, a phone and an email. */
 async function seedPool() {
   const add = async (name: string, domain: string, phone: string, products: string[], city: string) => {
     const { company } = await withTenant(TENANT_A, (tx) =>
@@ -102,7 +103,7 @@ beforeEach(async () => {
 });
 
 describe('a supplier or corporate searching from the portal', () => {
-  it('sees only name, city and why: never a phone, email, domain or page', async () => {
+  it('sees name, city, why and the company’s contacts: never a page, a Maps id or another requester’s search', async () => {
     const pool = await seedPool();
     const created = await v1<{ search: Record<string, unknown> }>('POST', '/v1/discovery/searches', {
       requesterRef: 'corp-7',
@@ -133,8 +134,11 @@ describe('a supplier or corporate searching from the portal', () => {
       persona: null,
       fit: null,
       why: expect.arrayContaining([expect.stringMatching(/^product: /)]),
+      phones: ['+966501111111'],
+      emails: ['sales@alfa-diesel.com.sa'],
+      website: 'https://alfa-diesel.com.sa',
     });
-    for (const leak of ['alfa-diesel.com.sa', '+96650', 'sales@', 'http', 'gmaps']) {
+    for (const leak of ['http://', 'gmaps', 'www.']) {
       expect(answer.text).not.toContain(leak);
     }
 
@@ -176,6 +180,19 @@ describe('a supplier or corporate searching from the portal', () => {
       `/v1/discovery/rfq-searches/${created.body.rfqSearch.id}/results?requesterRef=corp-7`,
     );
     expect(answer.body.rfqSearch).toMatchObject({ rfqRef: 'RFQ-A', status: 'done' });
+    // Every line's results carry the companies' contacts.
+    const contactsOf = (l: { results: Record<string, unknown>[] }) =>
+      l.results
+        .map((r) => [(r['company'] as { name: string }).name, r['phones'], r['emails'], r['website']])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    expect(answer.body.lines.map((l) => [l.lineRef, contactsOf(l as never)])).toEqual([
+      ['L1', [
+        ['Alfa Diesel', ['+966501111111'], ['sales@alfa-diesel.com.sa'], 'https://alfa-diesel.com.sa'],
+        ['Gulf Fuel', ['+966502222222'], ['sales@gulf-fuel.com'], 'https://gulf-fuel.com'],
+      ]],
+      ['L2', [['Riyadh Gas', ['+966503333333'], ['sales@riyadh-gas.com'], 'https://riyadh-gas.com']]],
+      ['L3', []],
+    ]);
     expect(answer.body.lines.map((l) => [l.lineRef, l.status, l.results.map((r) => r.company.id).sort()])).toEqual([
       ['L1', 'done', [pool.alfa, pool.gulf].sort()],
       ['L2', 'done', [pool.gas]],
@@ -258,5 +275,133 @@ describe('a supplier or corporate searching from the portal', () => {
       (await v1('POST', '/v1/discovery/searches', { requesterRef: 'x', product: 'Diesel', side: 'suppliers', countries: ['XX'] })).status,
     ).toBe(400);
     expect((await v1('GET', '/v1/discovery/searches')).status).toBe(400);
+  });
+});
+
+/** A company in the pool with exactly these identifiers, in this order. */
+async function companyWith(name: string, identifiers: { type: string; value: string }[]): Promise<string> {
+  const { company } = await withTenant(TENANT_A, (tx) =>
+    upsert(tx, { name, country: 'SA', identifiers, source: { type: 'api', tenantId: TENANT_A } }),
+  );
+  return company.id;
+}
+
+/** A finished buyers search straight into the tables, ranked in the order given. */
+async function buyersSearch(requesterRef: string, companyIds: string[]): Promise<string> {
+  const [job] = await db()<{ id: string }[]>`
+    insert into discovery_jobs (tenant_id, product, side, countries, status, requester_ref, finished_at)
+    values (${TENANT_A}, 'Calcium hypochlorite', 'buyers', ${['SA']}, 'done', ${requesterRef}, now())
+    returning id
+  `;
+  const [task] = await db()<{ id: string }[]>`
+    insert into discovery_tasks (tenant_id, job_id, country, status) values (${TENANT_A}, ${job!.id}, 'SA', 'done') returning id
+  `;
+  for (const [i, companyId] of companyIds.entries()) {
+    await db()`
+      insert into discovery_results (tenant_id, job_id, task_id, company_id, rank, score, reasons, fit, tier)
+      values (${TENANT_A}, ${job!.id}, ${task!.id}, ${companyId}, ${i + 1}, ${1 / (i + 1)}, ${['persona: Pool operators']}, 'strong', 'found')
+    `;
+  }
+  return job!.id;
+}
+
+type Contacts = { company: { id: string; name: string }; phones: string[]; emails: string[]; website: string | null };
+
+async function results(searchId: string, requesterRef: string) {
+  const answer = await v1<{ results: Contacts[] }>('GET', `/v1/discovery/searches/${searchId}/results?requesterRef=${requesterRef}`);
+  expect(answer.status).toBe(200);
+  return answer;
+}
+
+describe('contacts on search results (brief 27)', () => {
+  it('lists every phone and email oldest first, the oldest domain as the website, and empty values when none', async () => {
+    const many = await companyWith('Seerah Pools', [
+      { type: 'domain', value: 'https://www.Seerah-Pools.com.sa/contact' },
+      { type: 'phone', value: '+966 50 123 4567' },
+      { type: 'email', value: 'Info@seerah-pools.com.sa' },
+      { type: 'phone', value: '+966 11 234 5678' },
+      { type: 'email', value: 'sales@seerah-pools.com.sa' },
+      { type: 'phone', value: '+966551112233' },
+      { type: 'gmaps', value: 'ChIJseerah123' },
+    ]);
+    // A second domain recorded later, say from a later import. It sorts
+    // first, so only the order recorded makes the other one the website.
+    await withTenant(TENANT_A, (tx) =>
+      upsert(tx, {
+        name: 'Seerah Pools',
+        identifiers: [{ type: 'domain', value: 'seerah-pools.com.sa' }, { type: 'domain', value: 'aseerah.sa' }],
+        source: { type: 'import', tenantId: TENANT_A },
+      }),
+    );
+    const domains = await db()<{ value: string }[]>`
+      select value from company_identifiers where company_id = ${many} and type = 'domain' order by id
+    `;
+    expect(domains.map((d) => d.value)).toEqual(['seerah-pools.com.sa', 'aseerah.sa']);
+    // Known only by its Maps listing: no phone, email or website held.
+    const bare = await companyWith('Al Noor Compound', [{ type: 'gmaps', value: 'ChIJnoor456' }]);
+    const id = await buyersSearch('sup-4411', [many, bare]);
+
+    const answer = await results(id, 'sup-4411');
+    expect(answer.body.results).toEqual([
+      expect.objectContaining({
+        company: { id: many, name: 'Seerah Pools' },
+        phones: ['+966501234567', '+966112345678', '+966551112233'],
+        emails: ['info@seerah-pools.com.sa', 'sales@seerah-pools.com.sa'],
+        website: 'https://seerah-pools.com.sa',
+      }),
+      expect.objectContaining({ company: { id: bare, name: 'Al Noor Compound' }, phones: [], emails: [], website: null }),
+    ]);
+    // Present even when empty, and still never a Maps id.
+    for (const r of answer.body.results) expect(Object.keys(r)).toEqual(expect.arrayContaining(['phones', 'emails', 'website']));
+    expect(answer.text).not.toContain('ChIJ');
+  });
+
+  it('shows the survivor’s contacts for a company merged away since it was ranked', async () => {
+    const older = await companyWith('Gulf Water', [{ type: 'domain', value: 'water-gulf.com' }, { type: 'phone', value: '+966501000001' }]);
+    const newer = await companyWith('Khaleej Aqua', [{ type: 'domain', value: 'gulfwater.sa' }, { type: 'phone', value: '+966501000002' }]);
+    // The survivor learns a phone after the other company's, and its domain
+    // sorts after the other's: only the order recorded decides either one.
+    await withTenant(TENANT_A, (tx) =>
+      upsert(tx, {
+        name: 'Gulf Water',
+        identifiers: [{ type: 'domain', value: 'water-gulf.com' }, { type: 'phone', value: '+966501000003' }],
+        source: { type: 'api', tenantId: TENANT_A },
+      }),
+    );
+    const id = await buyersSearch('sup-1', [newer]);
+
+    // Both domains turn up on one page: the two were one company all along.
+    await withTenant(TENANT_A, (tx) =>
+      upsert(tx, {
+        name: 'Gulf Water',
+        identifiers: [{ type: 'domain', value: 'water-gulf.com' }, { type: 'domain', value: 'gulfwater.sa' }],
+        source: { type: 'api', tenantId: TENANT_A },
+      }),
+    );
+    expect((await db()<{ merged_into: string }[]>`select merged_into from companies where id = ${newer}`)[0]!.merged_into).toBe(older);
+
+    const answer = await results(id, 'sup-1');
+    expect(answer.body.results).toEqual([
+      expect.objectContaining({
+        company: { id: newer, name: 'Khaleej Aqua' },
+        phones: ['+966501000001', '+966501000002', '+966501000003'],
+        website: 'https://water-gulf.com',
+      }),
+    ]);
+  });
+
+  it('still lists an address the buyer opted out of', async () => {
+    const buyer = await companyWith('Palm Hotel', [
+      { type: 'domain', value: 'palm-hotel.com.sa' },
+      { type: 'phone', value: '+966501239999' },
+      { type: 'email', value: 'events@palm-hotel.com.sa' },
+    ]);
+    await withTenant(TENANT_A, (tx) => suppress(tx, { tenantId: TENANT_A, channel: 'sms', address: '+966501239999', reason: 'unsubscribe' }));
+    await withTenant(TENANT_A, (tx) => suppress(tx, { tenantId: TENANT_A, channel: 'email', address: 'events@palm-hotel.com.sa', reason: 'complaint' }));
+    const id = await buyersSearch('sup-2', [buyer]);
+
+    expect((await results(id, 'sup-2')).body.results).toEqual([
+      expect.objectContaining({ phones: ['+966501239999'], emails: ['events@palm-hotel.com.sa'], website: 'https://palm-hotel.com.sa' }),
+    ]);
   });
 });

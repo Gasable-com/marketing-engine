@@ -368,10 +368,18 @@ ones, are never returned.
 Suppliers and corporates search from the marketplace portal through these
 routes; `docs/PORTAL.md` is the full contract with examples. Every call carries
 `requesterRef`, the portal's own id for the user who asked; a search belongs to
-it, and any other `requesterRef` gets `404`. Responses never carry a company's
-contacts: a result is `{ rank, company: { id, name }, city, country, persona,
-fit, why }`, where `why` is the persona's checked evidence as `claim: "quote"`
-or the ranking reasons, never a page address.
+it, and any other `requesterRef` gets `404`. A result is `{ rank, company: { id,
+name }, city, country, persona, fit, why, phones, emails, website }`:
+
+- `why` is the persona's checked evidence as `claim: "quote"` or the ranking
+  reasons, never a page address.
+- `phones` is every phone the registry holds for the company, in E.164, and
+  `emails` every email, lower-case, both in the order they were recorded and
+  `[]` when there is none. Opted-out addresses are included.
+- `website` is `https://` and the company's oldest domain (no `www.`, no path),
+  or `null`.
+- A result whose company was merged since shows the survivor's contacts.
+- No Maps id, CR or VAT number is ever in a `/v1` discovery response.
 
 | Route | What |
 | --- | --- |
@@ -612,7 +620,9 @@ an address another contact already has is `409 contact_conflict`.
 
 A **discovery audience** (below) makes one contact per buyer it found, holding
 the company's phone and email from the registry. Those contacts are **hidden**:
-the tenant never brought the address, so it never sees it.
+the tenant never brought the address, so no audience, campaign or message
+response says which one the engine sends to. The search results list every
+phone and email the registry holds (brief 27).
 
 - `GET /v1/contacts` does not list them; `GET` and `PATCH /v1/contacts/:id`
   answer `404`, and `POST /v1/audiences/:id/members` reports the id as

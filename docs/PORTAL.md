@@ -17,7 +17,7 @@ What the portal team needs to add discovery to the supplier and corporate portal
 - **`requesterRef`** is your own id for the supplier or corporate using the portal: an opaque string, up to 200 characters. Send it on every discovery call.
   - Each search belongs to the requester that started it. Any other `requesterRef` gets `404`.
   - Your backend must take `requesterRef` from the logged-in session, never from the browser.
-- **Contacts are never returned.** A result has a company's **name, city and why it matches**: no phone, email, website or identifier.
+- **Each result carries the company's contacts.** A result has the company's **name, city and why it matches**, and every **phone** and **email** the engine holds for it, plus its **website**: see "The contact fields" below. Nothing else that identifies it (a Maps id, a CR or a VAT number) is returned.
 - **Results are shown at once.** There is no review gate.
 - **Any country.** `countries` takes any real ISO 3166-1 code, and every country is searched the same way: in the languages companies there use, with its name and main cities. The first search in a country the engine has not searched before spends a little longer on "understanding the product" while it learns the country once.
 
@@ -53,7 +53,9 @@ What the portal team needs to add discovery to the supplier and corporate portal
    → 200 { "search": {…}, "results": [
        { "rank": 1, "company": { "id": "…", "name": "Seerah" }, "city": "Riyadh", "country": "SA",
          "persona": "Swimming pool operators & pool contractors", "fit": "strong",
-         "why": ["Keeps pool water safe: \"Maintaining proper chlorine and pH levels for safety.\""] } ] }
+         "why": ["Keeps pool water safe: \"Maintaining proper chlorine and pH levels for safety.\""],
+         "phones": ["+966501234567", "+966112345678"], "emails": ["info@seerah.com.sa"],
+         "website": "https://seerah.com.sa" } ] }
    ```
 
 ### Corporate: "Find suppliers for this RFQ"
@@ -79,11 +81,28 @@ What the portal team needs to add discovery to the supplier and corporate portal
    → 200 { "rfqSearch": { "id", "rfqRef", "status", … },
            "lines": [
              { "lineRef": "L1", "product": "…", "identifiedAs": "Calcium Hypochlorite 70% Granular",
-               "status": "done", "progress": "done", "results": [ { "rank": 1, "company": {…}, "city", "why": [...] }, … ] },
+               "status": "done", "progress": "done",
+               "results": [ { "rank": 1, "company": {…}, "city", "why": [...], "phones": [...], "emails": [...], "website" }, … ] },
              { "lineRef": "L2", … } ] }
    ```
 
    A line that failed has `status: "failed"` and no results. The other lines still count.
+
+### The contact fields
+
+Every result, on both routes and both sides (buyers and suppliers), has these three fields. They are always present, so a result with none of them can say "no contact found".
+
+| Field | Type | Format | When there is none |
+|---|---|---|---|
+| `phones` | array of strings | International E.164: `+`, the country code and the number, no spaces or dashes (`+966501234567`). A mix of mobiles and landlines; the engine does not say which. | `[]` |
+| `emails` | array of strings | Lower-case (`info@seerah.com.sa`). | `[]` |
+| `website` | string or `null` | `https://` and the company's oldest known domain, with no `www.` and no path (`https://seerah.com.sa`). | `null` |
+
+- **Every value is listed**, in the order the engine learnt them, so the first is the longest known. A few companies have many (on staging, up to 13 phones and 17 emails), so show the first few and let the user expand.
+- **To format a phone for display**, use any libphonenumber port on the E.164 value (`+966 50 123 4567`). For a tap-to-call link use `tel:` and the value as it is; for WhatsApp, `https://wa.me/` and the value without the `+`.
+- **Opt-outs are not filtered out.** A phone or email whose owner opted out of the engine's messages is still listed. Opting out stops the engine sending; it does not hide the address.
+- **`website` is a domain the company is known by.** Usually it is the site the engine read. For a company imported or sent through the API it can also come from a company email address (`info@acme.com` gives `https://acme.com`), so it is not guaranteed to serve a page. A company known only by a shop builder or social network page (a Salla shop, an Instagram page) has no `website`.
+- **A company merged with another since the search ran** shows the merged company's contacts.
 
 ## Lists, history and the quota
 
@@ -112,7 +131,7 @@ Register an endpoint once with `POST /v1/webhooks` and the event types below. De
 
 ## Supplier: found buyers as an audience
 
-A supplier who has run **Find buyers** can turn one or several of its finished searches into an **audience** and send it a campaign. The engine contacts the buyers as **outreach**: no marketing consent is needed, every opt-out and sending window still applies, and the supplier never sees a buyer's phone or email. A company found in several searches is one buyer and gets one message.
+A supplier who has run **Find buyers** can turn one or several of its finished searches into an **audience** and send it a campaign. The engine contacts the buyers as **outreach**: no marketing consent is needed, every opt-out and sending window still applies, and nothing in the audience or campaign calls says which phone or email the engine used for a buyer. The search results above do list every phone and email. A company found in several searches is one buyer and gets one message.
 
 As for discovery, the portal backend sets `requesterRef` from the session and forwards only the calls below. An audience can only draw on that requester's own searches.
 
@@ -156,11 +175,11 @@ As for discovery, the portal backend sets `requesterRef` from the session and fo
    - The recipients list (`GET /v1/campaigns/:id/runs/:runId/recipients`) and `GET /v1/messages/:id` show each buyer as `company: { id, name }` with no address. A buyer blocked as `suppressed` opted out earlier (an unsubscribe, a STOP, a complaint) and will stay blocked; one `pending` with `notBefore` is waiting for its country's sending window.
    - A recurring outreach campaign resolves the audience again on each run, so a buyer that opted out or joined the marketplace drops out of the next run.
 
-Not in this step: showing contacts to the supplier, a reply path or an invite link, per-buyer frequency caps across campaigns, and audiences from corporate RFQ searches.
+Not in this step: addresses on audiences, campaigns and their messages (the results page has them), a reply path or an invite link, per-buyer frequency caps across campaigns, and audiences from corporate RFQ searches.
 
 ## What the portal builds
 
-- **Supplier product page.** A "Find buyers" button opens a progress card (`progress`), then the results list (name, city, why). Show the quota from `GET quota` next to the button. From a finished search, "Contact these buyers" picks searches with the preview above, saves the audience and starts an outreach campaign.
+- **Supplier product page.** A "Find buyers" button opens a progress card (`progress`), then the results list (name, city, why, phones, emails, website). Show the quota from `GET quota` next to the button. From a finished search, "Contact these buyers" picks searches with the preview above, saves the audience and starts an outreach campaign.
 - **Corporate RFQ page.** A "Find suppliers" button opens the same progress, per item, then the results grouped by item.
 - **Backend.** A thin proxy that adds the tenant token and the logged-in user's `requesterRef`, plus a webhook receiver that marks searches ready.
 

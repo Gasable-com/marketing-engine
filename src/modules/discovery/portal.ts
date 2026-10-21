@@ -1,12 +1,13 @@
 import type { Tx } from '../../db/client.js';
+import { companyContacts } from '../../spine/registry/index.js';
 import type { JobRow, TaskRow } from './jobs.js';
 import type { RfqSearchRow } from './rfq.js';
 
 /**
  * What a portal user (a supplier or a corporate) sees of discovery: their own
- * searches, and for each result a company's name, city and why it matches.
- * Never an identifier, a phone, an email, a website or a page address: the
- * marketplace keeps the relationship, and outreach goes through it.
+ * searches, and for each result a company's name, city, why it matches and
+ * the phones, emails and website the registry holds for it. Never a page
+ * address, a Maps id, a CR or a VAT number.
  *
  * Every read is scoped by RLS to the tenant, and here to the requester.
  */
@@ -38,6 +39,12 @@ export type PortalResult = {
   persona: string | null;
   fit: 'strong' | 'weak' | null;
   why: string[];
+  /** E.164, oldest first; empty when none is held. */
+  phones: string[];
+  /** Lower-case, oldest first; empty when none is held. */
+  emails: string[];
+  /** `https://` and the oldest domain; null when none is held. */
+  website: string | null;
 };
 
 export type PortalRfqSearch = {
@@ -132,7 +139,8 @@ async function withTasks(tx: Tx, jobs: JobRow[]): Promise<PortalSearch[]> {
 /**
  * A search's ranked results, in the portal's view. `why` is the persona and
  * each checked quote, or the ranking reasons, with every line that names a
- * page left out.
+ * page left out. The contacts are the company's as it is now, so a result
+ * merged away since it was ranked shows its survivor's.
  */
 export async function portalResults(tx: Tx, jobId: string): Promise<PortalResult[]> {
   const rows = await tx<
@@ -157,18 +165,25 @@ export async function portalResults(tx: Tx, jobId: string): Promise<PortalResult
     where r.job_id = ${jobId}
     order by r.rank, r.id
   `;
-  return rows.map((r) => ({
-    rank: r.rank,
-    company: { id: r.company_id, name: r.company_name },
-    city: r.cities?.[0] ?? null,
-    country: r.company_country,
-    persona: r.persona_name,
-    fit: r.fit,
-    why: whyOf(r.evidence, r.reasons),
-  }));
+  const contacts = await companyContacts(tx, rows.map((r) => r.company_id));
+  return rows.map((r) => {
+    const held = contacts.get(r.company_id)!;
+    return {
+      rank: r.rank,
+      company: { id: r.company_id, name: r.company_name },
+      city: r.cities?.[0] ?? null,
+      country: r.company_country,
+      persona: r.persona_name,
+      fit: r.fit,
+      why: whyOf(r.evidence, r.reasons),
+      phones: held.phones,
+      emails: held.emails,
+      website: held.domains[0] ? `https://${held.domains[0]}` : null,
+    };
+  });
 }
 
-/** Why a company matches, with nothing that would lead to its contacts. */
+/** Why a company matches, with no line that carries a page, an email or a phone. */
 function whyOf(evidence: { claim: string; quote: string }[], reasons: string[]): string[] {
   const leaks = /https?:\/\/|www\.|@|\+?\d[\d\s-]{7,}/i;
   const lines = evidence.length
@@ -206,9 +221,9 @@ export type RankedCompany = {
 };
 
 /**
- * Every result of these searches with one of these fits, as the portal sees
- * a company (name, city, country) plus what an audience needs to know about
- * it now: merges are followed to the survivor, and whether it has since
+ * Every result of these searches with one of these fits: a company's name,
+ * city and country, never its contacts, plus what an audience needs to know
+ * about it now: merges are followed to the survivor, and whether it has since
  * joined the marketplace. One company may appear once per search.
  */
 export async function rankedCompanies(

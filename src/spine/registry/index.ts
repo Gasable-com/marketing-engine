@@ -142,6 +142,47 @@ export async function contactIdentifiers(
   return found;
 }
 
+export type CompanyContacts = { phones: string[]; emails: string[]; domains: string[] };
+
+/**
+ * The phones, emails and domains of each of these companies as it is now:
+ * a merged-away company answers with its survivor's, since merging moves the
+ * identifiers. In the order they were recorded, so the first is the longest
+ * known. Every id asked about has an entry, empty when nothing is held.
+ */
+export async function companyContacts(
+  tx: Tx,
+  companyIds: string[],
+): Promise<Map<string, CompanyContacts>> {
+  const found = new Map<string, CompanyContacts>(
+    companyIds.map((id) => [id, { phones: [], emails: [], domains: [] }]),
+  );
+  if (companyIds.length === 0) return found;
+
+  const rows = await tx<{ asked: string; type: IdentifierType; value: string }[]>`
+    with recursive hop as (
+      select c.id as asked, c.id, c.merged_into, 0 as depth
+      from companies c
+      where c.id = any(${companyIds}::uuid[])
+      union all
+      select hop.asked, c.id, c.merged_into, hop.depth + 1
+      from hop
+      join companies c on c.id = hop.merged_into
+      where hop.depth < 20
+    )
+    select hop.asked::text as asked, i.type, i.value
+    from hop
+    join company_identifiers i on i.company_id = hop.id
+    where hop.merged_into is null and i.type in ('phone', 'email', 'domain')
+    order by i.id
+  `;
+  for (const row of rows) {
+    const entry = found.get(row.asked)!;
+    (row.type === "phone" ? entry.phones : row.type === "email" ? entry.emails : entry.domains).push(row.value);
+  }
+  return found;
+}
+
 export type CompanyDetail = {
   company: CompanyRow;
   identifiers: IdentifierRow[];
