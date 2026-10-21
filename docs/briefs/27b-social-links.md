@@ -1,4 +1,4 @@
-# Brief 27 — Social profiles of found companies, LinkedIn first
+# Brief 27b — Social profiles of found companies, LinkedIn first
 
 Asked for on 2026-10-21: "why do the searches not get LinkedIn and socials of companies?" The goal is to collect a found company's social profiles, with LinkedIn the one that matters most.
 
@@ -60,7 +60,7 @@ Keys only for networks present, LinkedIn first, URLs with scheme so a screen can
 - `GET /internal/discovery/jobs/:id/results`: the identifiers subquery includes `social`; each row gains `socials`.
 - `GET /internal/discovery/jobs/:id/results.csv`: columns `linkedin` and `socials` (all, `; `-joined) after `google_maps_ids`; both engine-normalised values.
 - `GET /internal/discovery/queries` rows carry `lookup` (`null` or `linkedin`).
-- The portal gets nothing: `docs/PORTAL.md` promises a result carries no website or identifier, and a company's LinkedIn is one.
+- The portal gets nothing: `docs/PORTAL.md` returns a result's phones, emails and website but no other identifier (no Maps id, CR or VAT), and a company's LinkedIn is an identifier.
 
 **7. The dashboard renders it.** The Discovery results table's identifiers cell shows `socials` as links (`target="_blank"`, `rel="noopener"`), LinkedIn first, and still lists every other identifier as today. A search's page shows the new counts where the others are. Nothing is derived in the browser.
 
