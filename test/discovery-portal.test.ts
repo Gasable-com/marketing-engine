@@ -181,13 +181,17 @@ describe('a supplier or corporate searching from the portal', () => {
     );
     expect(answer.body.rfqSearch).toMatchObject({ rfqRef: 'RFQ-A', status: 'done' });
     // Every line's results carry the companies' contacts.
-    expect(answer.body.lines[1]!.results).toEqual([
-      expect.objectContaining({
-        company: { id: pool.gas, name: 'Riyadh Gas' },
-        phones: ['+966503333333'],
-        emails: ['sales@riyadh-gas.com'],
-        website: 'https://riyadh-gas.com',
-      }),
+    const contactsOf = (l: { results: Record<string, unknown>[] }) =>
+      l.results
+        .map((r) => [(r['company'] as { name: string }).name, r['phones'], r['emails'], r['website']])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    expect(answer.body.lines.map((l) => [l.lineRef, contactsOf(l as never)])).toEqual([
+      ['L1', [
+        ['Alfa Diesel', ['+966501111111'], ['sales@alfa-diesel.com.sa'], 'https://alfa-diesel.com.sa'],
+        ['Gulf Fuel', ['+966502222222'], ['sales@gulf-fuel.com'], 'https://gulf-fuel.com'],
+      ]],
+      ['L2', [['Riyadh Gas', ['+966503333333'], ['sales@riyadh-gas.com'], 'https://riyadh-gas.com']]],
+      ['L3', []],
     ]);
     expect(answer.body.lines.map((l) => [l.lineRef, l.status, l.results.map((r) => r.company.id).sort()])).toEqual([
       ['L1', 'done', [pool.alfa, pool.gulf].sort()],
@@ -320,14 +324,19 @@ describe('contacts on search results (brief 27)', () => {
       { type: 'phone', value: '+966551112233' },
       { type: 'gmaps', value: 'ChIJseerah123' },
     ]);
-    // A second domain recorded later, say from a later import.
+    // A second domain recorded later, say from a later import. It sorts
+    // first, so only the order recorded makes the other one the website.
     await withTenant(TENANT_A, (tx) =>
       upsert(tx, {
         name: 'Seerah Pools',
-        identifiers: [{ type: 'domain', value: 'seerah-pools.com.sa' }, { type: 'domain', value: 'seerah.sa' }],
+        identifiers: [{ type: 'domain', value: 'seerah-pools.com.sa' }, { type: 'domain', value: 'aseerah.sa' }],
         source: { type: 'import', tenantId: TENANT_A },
       }),
     );
+    const domains = await db()<{ value: string }[]>`
+      select value from company_identifiers where company_id = ${many} and type = 'domain' order by id
+    `;
+    expect(domains.map((d) => d.value)).toEqual(['seerah-pools.com.sa', 'aseerah.sa']);
     // Known only by its Maps listing: no phone, email or website held.
     const bare = await companyWith('Al Noor Compound', [{ type: 'gmaps', value: 'ChIJnoor456' }]);
     const id = await buyersSearch('sup-4411', [many, bare]);
@@ -348,15 +357,24 @@ describe('contacts on search results (brief 27)', () => {
   });
 
   it('shows the survivor’s contacts for a company merged away since it was ranked', async () => {
-    const older = await companyWith('Gulf Water', [{ type: 'domain', value: 'gulf-water.com' }, { type: 'phone', value: '+966501000001' }]);
+    const older = await companyWith('Gulf Water', [{ type: 'domain', value: 'water-gulf.com' }, { type: 'phone', value: '+966501000001' }]);
     const newer = await companyWith('Khaleej Aqua', [{ type: 'domain', value: 'gulfwater.sa' }, { type: 'phone', value: '+966501000002' }]);
+    // The survivor learns a phone after the other company's, and its domain
+    // sorts after the other's: only the order recorded decides either one.
+    await withTenant(TENANT_A, (tx) =>
+      upsert(tx, {
+        name: 'Gulf Water',
+        identifiers: [{ type: 'domain', value: 'water-gulf.com' }, { type: 'phone', value: '+966501000003' }],
+        source: { type: 'api', tenantId: TENANT_A },
+      }),
+    );
     const id = await buyersSearch('sup-1', [newer]);
 
     // Both domains turn up on one page: the two were one company all along.
     await withTenant(TENANT_A, (tx) =>
       upsert(tx, {
         name: 'Gulf Water',
-        identifiers: [{ type: 'domain', value: 'gulf-water.com' }, { type: 'domain', value: 'gulfwater.sa' }],
+        identifiers: [{ type: 'domain', value: 'water-gulf.com' }, { type: 'domain', value: 'gulfwater.sa' }],
         source: { type: 'api', tenantId: TENANT_A },
       }),
     );
@@ -366,8 +384,8 @@ describe('contacts on search results (brief 27)', () => {
     expect(answer.body.results).toEqual([
       expect.objectContaining({
         company: { id: newer, name: 'Khaleej Aqua' },
-        phones: ['+966501000001', '+966501000002'],
-        website: 'https://gulf-water.com',
+        phones: ['+966501000001', '+966501000002', '+966501000003'],
+        website: 'https://water-gulf.com',
       }),
     ]);
   });
