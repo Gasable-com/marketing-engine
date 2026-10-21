@@ -7,9 +7,11 @@ import {
   IDENTIFIER_TYPES,
   findByIdentifier,
   get,
+  groupSocials,
   normalizeIdentifiers,
   upsert,
   upsertTenantView,
+  type CompanyDetail,
   type IdentifierType,
 } from '../../spine/registry/index.js';
 import type { AuthVars } from '../middleware/auth.js';
@@ -42,6 +44,11 @@ const createBody = z.object({
 });
 
 export const companies = new Hono<AuthVars>();
+
+/** A company as the API shows it: its social profiles grouped into links. */
+function present(detail: CompanyDetail) {
+  return { ...detail, socials: groupSocials(detail.identifiers) };
+}
 
 companies.post('/v1/companies', async (c) => {
   const parsed = createBody.safeParse(await c.req.json().catch(() => null));
@@ -77,7 +84,8 @@ companies.get('/v1/companies', async (c) => {
   }
 
   const tenantId = c.get('tenantId');
-  // Match the stored form, not whatever the caller typed.
+  // Match the stored form, not whatever the caller typed. The type ends at
+  // the first ':', so a value may carry its own (`social:https://…`).
   const normalized = normalizeIdentifiers([{ type, value }]).identifiers.find(
     (i) => i.type === type,
   );
@@ -88,7 +96,7 @@ companies.get('/v1/companies', async (c) => {
     return company ? get(tx, company.id) : undefined;
   });
 
-  return detail ? c.json(detail) : c.json({ error: 'not found' }, 404);
+  return detail ? c.json(present(detail)) : c.json({ error: 'not found' }, 404);
 });
 
 companies.get('/v1/companies/:id', async (c) => {
@@ -96,7 +104,7 @@ companies.get('/v1/companies/:id', async (c) => {
   if (!id.success) return c.json({ error: 'not found' }, 404);
 
   const detail = await withTenant(c.get('tenantId'), (tx) => get(tx, id.data));
-  return detail ? c.json(detail) : c.json({ error: 'not found' }, 404);
+  return detail ? c.json(present(detail)) : c.json({ error: 'not found' }, 404);
 });
 
 companies.put('/v1/companies/:id/view', async (c) => {

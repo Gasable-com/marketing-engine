@@ -4,8 +4,8 @@ import type { Window } from './shared.js';
 
 /**
  * What the searches cost, read from the `discovery.task.queried` events the
- * search stage appends: one per query, with the credits Serper charged, or
- * none when the cache answered. The log is the only source; the task counts
+ * search stage and the LinkedIn lookups append: one per query, with the
+ * credits Serper charged, or none when the cache answered. The log is the only source; the task counts
  * are for display. Money is credits times the price now, so a corrected
  * `SERPER_USD_PER_CREDIT` corrects every figure here at once.
  */
@@ -205,7 +205,9 @@ export async function queries(input: {
            e.payload->>'taskId' as "taskId", e.payload->>'country' as country, p.name as persona,
            e.payload->>'kind' as kind, e.payload->>'q' as q, e.payload->>'gl' as gl, e.payload->>'hl' as hl,
            (e.payload->>'cached')::boolean as cached, (e.payload->>'credits')::int as credits,
-           (e.payload->>'hits')::int as hits
+           (e.payload->>'hits')::int as hits,
+           -- A lookup about one company carries no persona; a search query no lookup.
+           e.payload->>'lookup' as lookup
     from events e
     join tenants t on t.id = e.tenant_id
     left join discovery_jobs j on j.id::text = e.subject_id

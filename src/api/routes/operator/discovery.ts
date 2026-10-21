@@ -18,6 +18,7 @@ import {
   readRow,
 } from '../../../modules/discovery/index.js';
 import { QUERIED_EVENT } from '../../../modules/discovery/index.js';
+import { groupSocials } from '../../../spine/registry/index.js';
 import { queries, spendColumns, spendOf, spendOfJob, type SpendRow } from './search-spend.js';
 import { listQuery, page, resolveWindow, windowQuery } from './shared.js';
 
@@ -330,6 +331,7 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results', async (c) => {
             }
           : null,
         identifiers: r.identifiers,
+        socials: groupSocials(r.identifiers),
       })),
       q.data.limit,
     ),
@@ -350,9 +352,9 @@ async function resultRows(
            p.quality, p.profiled_at,
            coalesce((
              select json_agg(json_build_object('type', i.type, 'value', i.value)
-                             order by i.type, i.value)
+                             order by i.type, i.id)
              from company_identifiers i
-             where i.company_id = c.id and i.type in ('domain', 'phone', 'email', 'gmaps')
+             where i.company_id = c.id and i.type in ('domain', 'phone', 'email', 'gmaps', 'social')
            ), '[]'::json) as identifiers
     from discovery_results r
     join discovery_tasks k on k.id = r.task_id
@@ -372,8 +374,8 @@ const CSV_MAX_ROWS = 2000;
 
 const CSV_COLUMNS = [
   'rank', 'country', 'tier', 'score', 'company', 'company_id', 'persona', 'fit',
-  'domains', 'phones', 'emails', 'google_maps_ids', 'products', 'roles', 'cities',
-  'profile_quality', 'profiled_at', 'evidence', 'reasons',
+  'domains', 'phones', 'emails', 'google_maps_ids', 'linkedin', 'socials', 'products', 'roles',
+  'cities', 'profile_quality', 'profiled_at', 'evidence', 'reasons',
 ] as const;
 
 /**
@@ -391,7 +393,7 @@ function csvCell(value: unknown, kind: 'text' | 'value' = 'text'): string {
 /** Which columns hold the engine's own normalised values rather than page text. */
 const CSV_VALUE_COLUMNS = new Set([
   'rank', 'country', 'tier', 'score', 'company_id', 'fit', 'domains', 'phones', 'emails',
-  'google_maps_ids', 'profile_quality', 'profiled_at',
+  'google_maps_ids', 'linkedin', 'socials', 'profile_quality', 'profiled_at',
 ]);
 
 discoveryOperator.get('/internal/discovery/jobs/:id/results.csv', async (c) => {
@@ -411,8 +413,10 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results.csv', async (c) => {
     r.identifiers.filter((i) => i.type === type).map((i) => i.value).join('; ');
   const lines = [
     CSV_COLUMNS.join(','),
-    ...rows.map((r) =>
-      [
+    ...rows.map((r) => {
+      // Links, as the results page gives them; `socials` is every network, LinkedIn first.
+      const socials = groupSocials(r.identifiers);
+      return [
         r.rank,
         r.country,
         r.tier,
@@ -425,6 +429,8 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results.csv', async (c) => {
         values(r, 'phone'),
         values(r, 'email'),
         values(r, 'gmaps'),
+        (socials.linkedin ?? []).join('; '),
+        Object.values(socials).flat().join('; '),
         (r.products ?? []).join('; '),
         (r.roles ?? []).join('; '),
         (r.cities ?? []).join('; '),
@@ -434,8 +440,8 @@ discoveryOperator.get('/internal/discovery/jobs/:id/results.csv', async (c) => {
         r.reasons.join(' | '),
       ]
         .map((v, i) => csvCell(v, CSV_VALUE_COLUMNS.has(CSV_COLUMNS[i]!) ? 'value' : 'text'))
-        .join(','),
-    ),
+        .join(',');
+    }),
   ];
 
   // The product names the file; anything outside plain ASCII goes in filename*.

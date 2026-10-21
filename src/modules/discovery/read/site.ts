@@ -26,6 +26,8 @@ const NOT_A_PAGE = /\.(pdf|jpe?g|png|gif|webp|svg|ico|zip|rar|docx?|xlsx?|pptx?|
 export type ReadPage = { url: string; text: string };
 export type SiteRead = {
   pages: ReadPage[];
+  /** Every link of every page read, in read order, home page first: where the socials are found. */
+  links: Link[];
   failed: { url: string; reason: string }[];
   /** Pages read through Firecrawl, and through the plain fetch. */
   firecrawl: number;
@@ -33,7 +35,7 @@ export type SiteRead = {
 };
 
 export async function readSite(input: { url: string | null; domain: string }): Promise<SiteRead> {
-  const result: SiteRead = { pages: [], failed: [], firecrawl: 0, fetchFallback: 0 };
+  const result: SiteRead = { pages: [], links: [], failed: [], firecrawl: 0, fetchFallback: 0 };
   const home = homeUrl(input.url, input.domain);
   if (isSharedHost(input.domain)) {
     result.failed.push({ url: home, reason: 'shared host' });
@@ -50,12 +52,16 @@ export async function readSite(input: { url: string | null; domain: string }): P
   };
 
   const first = await readPage(home, input.domain, result);
-  if (!first || !keep(first.url, first.text)) return result;
+  if (!first) return result;
+  result.links.push(...first.links);
+  if (!keep(first.url, first.text)) return result;
 
   const seen = new Set([key(home), key(first.url)]);
   for (const url of choosePages(first.links, input.domain, seen)) {
     const page = await readPage(url, input.domain, result);
-    if (page && !keep(page.url, page.text)) break;
+    if (!page) continue;
+    result.links.push(...page.links);
+    if (!keep(page.url, page.text)) break;
   }
   return result;
 }

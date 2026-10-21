@@ -71,6 +71,11 @@ export function foldText(text: string): string {
   return folded.trim();
 }
 
+/** Whether a word is a legal form or a generic trade word, in either language. */
+export function isNoiseWord(word: string): boolean {
+  return NOISE_WORDS.has(foldText(word));
+}
+
 export function normalizeName(name: string): string {
   return foldText(name)
     .split(' ')

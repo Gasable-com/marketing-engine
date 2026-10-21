@@ -6,6 +6,7 @@ import { setFirecrawlFetch, setResolver, setTransport } from '../src/modules/dis
 import { setProfile } from '../src/modules/discovery/index.js';
 import { fakeLookup, resetFakeLookup, seedFakeLookup, setCompanyLookup, upsert } from '../src/spine/registry/index.js';
 import { checkExtraction } from '../src/modules/discovery/extract/check.js';
+import { namesCompany, pickLinkedin, searchName } from '../src/modules/discovery/extract/linkedin.js';
 import { FakeBridge, FakeSerper, clearProviders, drive, ok, setProviders, terms, type BridgeAnswer } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
@@ -46,6 +47,8 @@ const serper = new FakeSerper([
   { path: '/search', match: /^توريد ديزل/, fixture: 'web-diesel-ar.json' },
   { path: '/places', match: /^diesel supplier/, fixture: 'places-diesel.json' },
   { path: '/search', match: /^ready mix concrete company/, fixture: 'web-ready-mix.json' },
+  // Every LinkedIn lookup: one hit for Alfa Diesel Supply, one for another company.
+  { path: '/search', match: / site:linkedin\.com\/company$/, fixture: 'web-linkedin.json' },
 ]);
 
 /** Keep every company the search turned up, except news. */
@@ -174,6 +177,7 @@ type Result = {
   company: { id: string; name: string };
   profile: { products: string[]; quality: string | null; countries?: string[] } | null;
   identifiers: { type: string; value: string }[];
+  socials: Record<string, string[]>;
 };
 
 async function search(body: Record<string, unknown>) {
@@ -505,7 +509,7 @@ describe('read, extract, save, rank', () => {
     const text = new TextDecoder().decode(raw.slice(3));
     const lines = text.trimEnd().split('\r\n');
     expect(lines[0]).toBe(
-      'rank,country,tier,score,company,company_id,persona,fit,domains,phones,emails,google_maps_ids,products,roles,cities,profile_quality,profiled_at,evidence,reasons',
+      'rank,country,tier,score,company,company_id,persona,fit,domains,phones,emails,google_maps_ids,linkedin,socials,products,roles,cities,profile_quality,profiled_at,evidence,reasons',
     );
     expect(lines).toHaveLength(results.length + 1);
     expect(lines[1]).toMatch(/^1,SA,found,/);
@@ -541,7 +545,7 @@ describe('read, extract, save, rank', () => {
       const html = SITES[`${u.host}${u.pathname}`];
       if (!html) return new Response('{"success":false}', { status: 404 });
       const text = html.toString().replace(/<[^>]+>/g, ' ');
-      return new Response(JSON.stringify({ success: true, data: { markdown: text, links: [], metadata: { url, sourceURL: url, statusCode: 200 } } }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, data: { markdown: text, rawHtml: html.toString(), metadata: { url, sourceURL: url, statusCode: 200 } } }), { status: 200 });
     });
     const { detail, results } = await search({ product: 'diesel', side: 'suppliers' });
     expect(scrapes).toBeGreaterThan(0);
@@ -549,6 +553,187 @@ describe('read, extract, save, rank', () => {
     expect(detail.tasks[0]!.counts['fetch_fallback']).toBeGreaterThan(0);
     expect(named(results, 'Gulf Fuel Trading Co.')).toMatchObject({ tier: 'found' });
     setFirecrawlFetch(null);
+  });
+});
+
+describe('social profiles', () => {
+  const isLookup = (c: { q: string }) => c.q.endsWith(' site:linkedin.com/company');
+  const socialsOf = async (companyId: string) =>
+    (await db()<{ value: string }[]>`
+      select value from company_identifiers where company_id = ${companyId} and type = 'social' order by id
+    `).map((r) => r.value);
+  const sourceOf = async (companyId: string) =>
+    (await db()<{ data: Record<string, unknown> }[]>`select data from company_sources where company_id = ${companyId}`)[0]!.data;
+  const lookupEvents = (jobId: string) => db()<{ payload: Record<string, unknown> }[]>`
+    select payload from events
+    where type = 'discovery.task.queried' and subject_id = ${jobId} and payload->>'lookup' = 'linkedin'
+    order by id
+  `;
+
+  it('saves the five profiles a footer links, in canonical form, and asks Serper for none', async () => {
+    SITES['najm-fuel.com/'] = page('social-home.html');
+    extractTweak = (host, answer) => {
+      if (host !== 'najm-fuel.com') return;
+      const url = 'https://najm-fuel.com/';
+      answer['name'] = q('Sahel Industrial Supplies', 'Sahel Industrial Supplies Co.', url);
+      answer['products'] = [q('bulk diesel delivery', 'We supply bulk diesel delivery to factories', url)];
+      answer['evidence'] = [];
+    };
+    try {
+      const { jobId, results, detail } = await search({ product: 'diesel', side: 'suppliers' });
+      const sahel = named(results, 'Sahel Industrial Supplies')!;
+      const five = [
+        'linkedin.com/company/sahel-supplies',
+        'instagram.com/sahelsupplies',
+        'x.com/sahelsupplies',
+        'facebook.com/sahelsupplies',
+        'youtube.com/channel/UCsahelSupplies01',
+      ];
+      // The share buttons and the manager's own profile are not among them.
+      expect(await socialsOf(sahel.company.id)).toEqual(five);
+      expect((await sourceOf(sahel.company.id))['socials']).toEqual(five);
+      expect(serper.calls.filter(isLookup).some((c) => c.q.includes('Sahel'))).toBe(false);
+      expect(detail.tasks[0]!.counts).toMatchObject({ linkedin_pages: 1 });
+      expect(detail.tasks[0]!.counts['socials']).toBeGreaterThanOrEqual(1);
+
+      // The results row groups them as links, LinkedIn first, and lists them once more as identifiers.
+      expect(sahel.socials).toEqual({
+        linkedin: ['https://linkedin.com/company/sahel-supplies'],
+        instagram: ['https://instagram.com/sahelsupplies'],
+        x: ['https://x.com/sahelsupplies'],
+        facebook: ['https://facebook.com/sahelsupplies'],
+        youtube: ['https://youtube.com/channel/UCsahelSupplies01'],
+      });
+      expect(Object.keys(sahel.socials)[0]).toBe('linkedin');
+      expect(sahel.identifiers.filter((i) => i.type === 'social').map((i) => i.value).sort()).toEqual([...five].sort());
+      // A company with none says so with an empty object, not a missing key.
+      expect(results.find((r) => !r.identifiers.some((i) => i.type === 'social'))!.socials).toEqual({});
+
+      // The CSV has the same links: LinkedIn on its own, then every network.
+      const res = await app.fetch(
+        new Request(`http://engine.test/internal/discovery/jobs/${jobId}/results.csv`, {
+          headers: { 'X-Internal-Token': INTERNAL_TOKEN },
+        }),
+      );
+      const lines = (await res.text()).replace(/^\uFEFF/, '').trimEnd().split('\r\n');
+      const header = lines[0]!.split(',');
+      expect(header.slice(header.indexOf('google_maps_ids'), header.indexOf('google_maps_ids') + 3)).toEqual([
+        'google_maps_ids', 'linkedin', 'socials',
+      ]);
+      const row = lines.find((l) => l.includes(sahel.company.id))!.split(',');
+      expect(row[header.indexOf('linkedin')]).toBe('https://linkedin.com/company/sahel-supplies');
+      expect(row[header.indexOf('socials')]).toBe(
+        'https://linkedin.com/company/sahel-supplies; https://instagram.com/sahelsupplies; https://x.com/sahelsupplies; ' +
+          'https://facebook.com/sahelsupplies; https://youtube.com/channel/UCsahelSupplies01',
+      );
+    } finally {
+      SITES['najm-fuel.com/'] = page('najm-home.html');
+    }
+  });
+
+  it('looks up a LinkedIn no page linked, takes only a hit titled for the company, and asks again from the cache', async () => {
+    const { jobId, detail } = await search({ product: 'diesel', side: 'suppliers' });
+    expect(detail.tasks[0]).toMatchObject({ status: 'done' });
+    const [alfa] = await db()<{ id: string }[]>`select company_id::text as id from company_identifiers where value = 'alfa-diesel.com.sa'`;
+    const [gulf] = await db()<{ id: string }[]>`select company_id::text as id from company_identifiers where value = 'gulf-fuel.com'`;
+
+    // The first hit is Alfa Diesel Services: another company, passed over.
+    expect(await socialsOf(alfa!.id)).toEqual(['linkedin.com/company/alfa-diesel-supply']);
+    expect((await sourceOf(alfa!.id))['linkedinLookup']).toEqual({
+      q: 'Alfa Diesel Supply site:linkedin.com/company',
+      url: 'https://sa.linkedin.com/company/alfa-diesel-supply?trk=public_profile',
+      title: 'Alfa Diesel Supply Company | LinkedIn',
+    });
+    // Gulf Fuel's lookup answers with the same two pages, neither of them its own: a miss.
+    expect(await socialsOf(gulf!.id)).toEqual([]);
+    expect((await sourceOf(gulf!.id))['linkedinLookup']).toBeUndefined();
+
+    // One per saved company, the Maps-only one by its listing name; none for what was not saved.
+    const lookups = serper.calls.filter(isLookup);
+    expect(lookups).toHaveLength(5);
+    expect(lookups).toContainEqual({ path: '/search', q: 'Riyadh Diesel Station site:linkedin.com/company', gl: 'sa', hl: 'en' });
+    expect(detail.tasks[0]!.counts).toMatchObject({ linkedin_lookups: 5, linkedin_found: 1, socials: 1, linkedin_pages: 0 });
+    expect(detail.tasks[0]!.counts['linkedin_lookup_failed']).toBeUndefined();
+
+    const events = await lookupEvents(jobId);
+    expect(events).toHaveLength(5);
+    expect(events.find((e) => e.payload['q'] === 'Alfa Diesel Supply site:linkedin.com/company')!.payload).toMatchObject({
+      personaId: null, provider: 'serper', kind: 'web', gl: 'sa', hl: 'en', page: 1, cached: false, credits: 1, hits: 2,
+    });
+    // On the spend log beside the search's own queries, told apart by `lookup`.
+    const log = await call<{ items: { q: string; lookup: string | null; persona: string | null; credits: number }[] }>(
+      'GET', `/internal/discovery/queries?jobId=${jobId}&limit=200`,
+    );
+    const asked = log.body.items.filter((r) => r.lookup === 'linkedin');
+    expect(asked).toHaveLength(5);
+    expect(asked.every((r) => r.persona === null && r.credits === 1)).toBe(true);
+    expect(log.body.items.filter((r) => r.lookup === null).length).toBe(detail.tasks[0]!.counts['queries']);
+    const spent = await call<{ job: { spend: { queries: number } } }>('GET', `/internal/discovery/jobs/${jobId}`);
+    expect(spent.body.job.spend.queries).toBe(log.body.items.length);
+
+    // Read again: the pool's LinkedIn is not asked for, and the rest come from the cache.
+    await db()`update company_profiles set profiled_at = now() - interval '100 days'`;
+    const again = await search({ product: 'diesel', side: 'suppliers' });
+    const second = await lookupEvents(again.jobId);
+    expect(second).toHaveLength(4);
+    expect(second.some((e) => String(e.payload['q']).includes('Alfa'))).toBe(false);
+    expect(second.every((e) => e.payload['cached'] === true && e.payload['credits'] === 0)).toBe(true);
+    expect(serper.calls.filter(isLookup)).toHaveLength(5);
+  });
+
+  it('saves a company without LinkedIn when the lookup fails, and counts it', async () => {
+    serper.override = (c) => (isLookup(c) ? new Response(JSON.stringify({ message: 'upstream timeout' }), { status: 502 }) : null);
+    try {
+      const { jobId, detail, results } = await search({ product: 'diesel', side: 'suppliers' });
+      expect(detail.tasks[0]).toMatchObject({ status: 'done' });
+      expect(detail.tasks[0]!.counts).toMatchObject({ saved: 5, linkedin_lookups: 5, linkedin_lookup_failed: 5 });
+      expect(detail.tasks[0]!.counts['linkedin_found']).toBeUndefined();
+      expect(await socialsOf(named(results, 'Alfa Diesel Supply')!.company.id)).toEqual([]);
+      // Nothing was spent, so nothing is on the log.
+      expect(await lookupEvents(jobId)).toHaveLength(0);
+    } finally {
+      serper.override = null;
+    }
+  });
+
+  it('stops the lookups at a refused key, and the task still finishes', async () => {
+    serper.override = (c) => (isLookup(c) ? new Response(JSON.stringify({ message: 'Not enough credits' }), { status: 400 }) : null);
+    try {
+      const { detail } = await search({ product: 'diesel', side: 'suppliers' });
+      expect(detail.tasks[0]).toMatchObject({ status: 'done', error: null });
+      expect(serper.calls.filter(isLookup)).toHaveLength(1);
+      expect(detail.tasks[0]!.counts).toMatchObject({ saved: 5, linkedin_lookups: 1, linkedin_lookup_failed: 1 });
+    } finally {
+      serper.override = null;
+    }
+  });
+
+  it('leaves the web agency’s Instagram, linked from two companies, with the first and merges nothing', async () => {
+    const agency = '<footer><a href="https://www.instagram.com/nileweb/">Site by Nile Web</a></footer></body>';
+    const withAgency = (name: string) => Buffer.from(page(name).toString().replace('</body>', agency));
+    SITES['www.alfa-diesel.com.sa/en/'] = withAgency('alfa-home.html');
+    SITES['gulf-fuel.com/about'] = withAgency('gulf-about.html');
+    try {
+      const { results } = await search({ product: 'diesel', side: 'suppliers' });
+      const alfa = named(results, 'Alfa Diesel Supply')!;
+      const gulf = named(results, 'Gulf Fuel Trading Co.')!;
+      expect(gulf.company.id).not.toBe(alfa.company.id);
+      // Candidates of one task share a created_at, so which is read first is the pool's to say.
+      const [first, second] = await db()<{ id: string }[]>`
+        select id::text from companies where id = any(${[alfa.company.id, gulf.company.id]}::uuid[]) order by created_at
+      `;
+      const holders = await db()<{ id: string }[]>`
+        select company_id::text as id from company_identifiers where type = 'social' and value = 'instagram.com/nileweb'
+      `;
+      expect(holders).toEqual([{ id: first!.id }]);
+      // The second one's page linked it too, and its source says so.
+      expect((await sourceOf(second!.id))['socials']).toEqual(['instagram.com/nileweb']);
+      const [merged] = await db()<{ n: number }[]>`select count(*)::int as n from companies where merged_into is not null`;
+      expect(merged!.n).toBe(0);
+    } finally {
+      SITES['www.alfa-diesel.com.sa/en/'] = page('alfa-home.html');
+      SITES['gulf-fuel.com/about'] = page('gulf-about.html');
+    }
   });
 });
 
@@ -594,5 +779,101 @@ describe('checking quotes', () => {
         sources: [listing], personas: [persona], listingTitle: 'Falah Ready Mix', listingUrl: listing.url,
       }),
     ).toMatchObject({ saved: false });
+  });
+});
+
+describe('the LinkedIn lookup', () => {
+  it('asks for the name without its branch, its aside, its legal form or its punctuation', () => {
+    expect(searchName('BRC COMPRESSORS - UNIVERSE WAY CO. Riyadh Branch')).toBe('BRC COMPRESSORS UNIVERSE WAY');
+    expect(searchName('Al Tadbir Trading Est.')).toBe('Al Tadbir');
+    expect(searchName('Diyar Al-ezz Compny')).toBe('Diyar Al ezz Compny');
+    expect(searchName('QARAH ADVANCED TOOLS CO. (QATCO)')).toBe('QARAH ADVANCED TOOLS');
+    expect(searchName('شركة شهاب الصناعية التجارية (لحام,ضواغط هواء)')).toBe('شهاب الصناعية');
+    expect(searchName('مؤسسة الفلاح للتجارة - فرع الرياض')).toBe('الفلاح');
+    expect(searchName('مطعم البيك - الفرع الرئيسي')).toBe('مطعم البيك');
+    expect(searchName('Jarir Bookstore - Olaya Branch')).toBe('Jarir Bookstore');
+    // Only a whole word is a branch.
+    expect(searchName('Acme Databranch')).toBe('Acme Databranch');
+    expect(searchName('مؤسسة التفرع الأخضر')).toBe('التفرع الأخضر');
+    // Nothing left but legal words: asked as saved.
+    expect(searchName('Trading Co.')).toBe('Trading Co.');
+  });
+
+  it('takes a page named for the company with or without its branch, and never another company', () => {
+    const hit = (title: string, link: string) => ({ title, link, snippet: '', position: 1 });
+    const name = 'BRC COMPRESSORS - UNIVERSE WAY CO. Riyadh Branch';
+    expect(namesCompany(hit('BRC Compressors Universe Way | LinkedIn', 'https://sa.linkedin.com/company/brc-sa'), name)).toBe(true);
+    expect(namesCompany(hit('Riyadh Compressors | LinkedIn', 'https://sa.linkedin.com/company/brc-compressors-universe-way'), name)).toBe(true);
+    expect(namesCompany(hit('BRC Compressors | LinkedIn', 'https://sa.linkedin.com/company/brc'), name)).toBe(false);
+    expect(namesCompany(hit('Universe Way | LinkedIn', 'https://sa.linkedin.com/company/universe-way'), name)).toBe(false);
+    // A person with the company's name is not its page.
+    expect(namesCompany(hit('BRC Compressors Universe Way | LinkedIn', 'https://sa.linkedin.com/in/brc'), name)).toBe(false);
+  });
+
+  // What Serper answered on staging on 2026-10-21, trimmed, and the SA row's words.
+  const hit = (title: string, link: string, snippet = '') => ({ title, link, snippet, position: 1 });
+  const saudi = {
+    gl: 'sa',
+    countryNames: ['saudi', 'saudi arabia', 'ksa', 'kingdom of saudi arabia', 'السعودية', 'المملكة العربية السعودية', 'المملكة'],
+    cities: ['Riyadh', 'riyad', 'الرياض', 'Jeddah', 'جدة', 'Dammam', 'الدمام', 'Mecca', 'Makkah', 'مكة', 'Medina', 'المدينة المنورة', 'Khobar', 'الخبر'],
+    domain: null,
+  };
+  const page = (title: string, slug: string, snippet: string, sub = 'www') => hit(title, `https://${sub}.linkedin.com/company/${slug}`, snippet);
+
+  it('reads a bilingual title as two names, split at a bar or a spaced dash', () => {
+    const name = 'شركة الإبتكارات المتحدة';
+    expect(namesCompany(hit('United Innovations Trading Co | شركة الإبتكارات المتحدة ...', 'https://www.linkedin.com/company/x'), 'United Innovations Trading Company')).toBe(true);
+    expect(namesCompany(hit('United Innovations Trading Co - شركة الإبتكارات المتحدة | LinkedIn', 'https://www.linkedin.com/company/x'), name)).toBe(true);
+    expect(namesCompany(hit('United Innovations Trading Co|شركة الإبتكارات المتحدة - LinkedIn', 'https://www.linkedin.com/company/x'), name)).toBe(true);
+    // A hyphen inside a name is part of it.
+    expect(namesCompany(hit('Al-Rashid Trading | LinkedIn', 'https://www.linkedin.com/company/x'), 'Rashid')).toBe(false);
+  });
+
+  it('takes a namesake only when a listing of its page places it in the country', () => {
+    const tampa = page('United Innovations Inc', 'united-innovations-inc',
+      'United Innovations Inc is an electrical/electronic manufacturing company based out of PO Box 166, Tampa, Florida, United States.');
+    const itools = page('United Innovations Trading Co | شركة الإبتكارات المتحدة ...', 'united-innovations-trading-co',
+      'Primary supplier for many construction companies in Saudi Arabia , adding extra value to our customers.');
+    // The Tampa company folds to the same name and comes first: passed over for the one in Saudi Arabia.
+    expect(namesCompany(tampa, 'United Innovations Trading Company')).toBe(true);
+    expect(pickLinkedin([tampa, itools], 'United Innovations Trading Company', saudi)).toBe(itools);
+    expect(pickLinkedin([tampa], 'United Innovations Trading Company', saudi)).toBeNull();
+
+    const atlas = page('Atlas Middle East Trading Est', 'atlas-me',
+      'Atlas Middle East Trading Est. is a premier industrial air solutions provider based in Dammam, Saudi Arabia.');
+    expect(pickLinkedin([atlas], 'Atlas Middle East Trading Est', saudi)).toBe(atlas);
+    // A location as LinkedIn writes one, in either script, and an Arabic country name with "in" joined to it.
+    expect(pickLinkedin([page('Acme Pumps', 'acme', 'Industrial Machinery · Riyadh, Riyadh · 51-200 employees')], 'Acme Pumps', saudi)).not.toBeNull();
+    expect(pickLinkedin([page('Acme Pumps', 'acme', 'المقر الرئيسي: جدة، مكة')], 'Acme Pumps', saudi)).not.toBeNull();
+    expect(pickLinkedin([page('Acme Pumps', 'acme', 'نعمل بالمملكة العربية السعودية منذ 1990')], 'Acme Pumps', saudi)).not.toBeNull();
+    // A place in another company's snippet places nobody else.
+    const copco = page('Atlas Copco', 'atlas-copco', 'Compressors sold across Saudi Arabia.');
+    expect(pickLinkedin([copco, page('Atlas Middle East Trading Est', 'atlas-me', '')], 'Atlas Middle East Trading Est', saudi)).toBeNull();
+  });
+
+  it('is placed by the company’s own domain as a host, on any listing of the page', () => {
+    // The www and sa listings carry no place; the bo listing names the domain.
+    const gulf = page('Gulf Riyadah Co. Ltd.', 'gulf-riyadah-co.-ltd.', 'Complete EPC (Engineering, Procurement ...');
+    const gulfSa = page('Gulf Riyadah Co. Ltd.', 'gulf-riyadah-co.-ltd.', 'Complete EPC (Engineering, Procurement ...', 'sa');
+    const gulfBo = page('Gulf Riyadah Co. Ltd.', 'gulf-riyadah-co.-ltd.', 'Sitio web: http://www.gulfriyadah.com/.', 'bo');
+    expect(pickLinkedin([gulf, gulfSa, gulfBo], 'Gulf Riyadah Company Ltd.', { ...saudi, domain: 'gulfriyadah.com' })).toBe(gulf);
+    expect(pickLinkedin([gulf, gulfSa, gulfBo], 'Gulf Riyadah Company Ltd.', saudi)).toBeNull();
+    // A longer domain that starts with it, or a folded TLD that reads as a word, is someone else's.
+    expect(pickLinkedin([page('Al Noor | LinkedIn', 'al-noor-eg', 'Website: http://www.alnoor.com.eg')], 'Al Noor Est.', { ...saudi, domain: 'alnoor.com' })).toBeNull();
+    expect(pickLinkedin([page('Nova Co | LinkedIn', 'nova-co', 'Nova Co is a Denver-based design firm.')], 'Nova Trading Est.', { ...saudi, domain: 'nova.co' })).toBeNull();
+  });
+
+  it('is never placed by a lone word, the LinkedIn host or the company’s own name', () => {
+    const noor = 'Al Noor Trading Est.';
+    const placedBy = (snippet: string, sub = 'www') => pickLinkedin([page('Al Noor Trading', 'al-noor', snippet, sub)], noor, saudi);
+    expect(placedBy('شركة النور للتجارة في المملكة الأردنية الهاشمية - عمّان')).toBeNull();
+    expect(placedBy('Cairo, Egypt. Our clients include Saudi Aramco and SABIC.')).toBeNull();
+    expect(placedBy('A mecca for Middle Eastern groceries in Chicago.')).toBeNull();
+    expect(placedBy('Al Noor LLC · Medina, Ohio, United States')).toBeNull();
+    expect(placedBy('Founded by Riyad Haddad in Beirut, Lebanon.')).toBeNull();
+    expect(placedBy('نصنع الخبر في القاهرة')).toBeNull();
+    expect(placedBy('Al Noor | Cairo, Egypt', 'sa')).toBeNull();
+    // Medina in the name places every namesake called Medina Trading.
+    expect(pickLinkedin([page('Medina Trading', 'medina-trading', 'Medina Trading · Medina, Ohio')], 'Medina Trading', saudi)).toBeNull();
   });
 });

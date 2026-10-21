@@ -1,13 +1,12 @@
 import { db, withTenant } from '../../../db/client.js';
 import { env } from '../../../env.js';
-import { emit } from '../../../spine/events/index.js';
 import { findByIdentifier, isSharedHost, normalizeDomain, normalizeIdentifiers } from '../../../spine/registry/index.js';
 import { ask, bridgeConfigured, reserveClaudeCall } from '../claude.js';
 import { PermanentError, UsageLimitError } from '../errors.js';
 import type { Counts, JobRow, PersonaRow, TaskRow } from '../jobs.js';
 import { Triage, triagePrompt, type Verdict } from '../prompts.js';
 import { placesSearch, webSearch, type Cached } from './cache.js';
-import { QUERIED_EVENT } from './cost.js';
+import { recordQuery } from './cost.js';
 import { countrySettings, isArabic, isBlockedHost, type CountrySettings } from './country.js';
 import { serperConfigured } from './serper.js';
 
@@ -147,35 +146,11 @@ export async function runSearch(job: JobRow, task: TaskRow): Promise<Counts> {
   let hits = 0;
   const places: { q: string; personaId: string; hit: Awaited<ReturnType<typeof placesSearch>>['hits'][number] }[] = [];
 
-  // Spent is spent: every query goes on the event log as it happens, so a
-  // task that fails on its twelfth query still has its first eleven on
-  // record. The log is what the operator's spend figures are read from.
+  // Every query goes on the event log as it happens, cached or not.
   const record = async (query: Planned, result: Cached<unknown>) => {
     result.fromCache ? (cacheHits += 1) : (serperCalls += 1);
     serperCredits += result.credits;
-    await withTenant(job.tenant_id, (tx) =>
-      emit(tx, {
-        tenantId: job.tenant_id,
-        type: QUERIED_EVENT,
-        subjectType: 'discovery_job',
-        subjectId: job.id,
-        payload: {
-          jobId: job.id,
-          taskId: task.id,
-          country: task.country,
-          personaId: query.personaId,
-          provider: 'serper',
-          kind: query.kind,
-          q: query.q,
-          gl: country.gl,
-          hl: query.hl,
-          page: 1,
-          cached: result.fromCache,
-          credits: result.credits,
-          hits: result.hits.length,
-        },
-      }),
-    );
+    await recordQuery(task, { personaId: query.personaId, kind: query.kind, q: query.q, gl: country.gl, hl: query.hl }, result);
   };
 
   for (const query of queries) {

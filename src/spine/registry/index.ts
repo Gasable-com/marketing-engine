@@ -9,10 +9,12 @@ import {
 } from "./identifiers.js";
 import { companyLookup, type CompanyFacts } from "./lookup/index.js";
 import { normalizeName } from "./names.js";
+import { groupSocials, type Socials } from "./socials.js";
 
 export * from "./identifiers.js";
 export * from "./lookup/index.js";
-export { foldText, normalizeName } from "./names.js";
+export * from "./socials.js";
+export { foldText, isNoiseWord, normalizeName } from "./names.js";
 
 /**
  * How alike two normalised names must be before the registry links them.
@@ -118,6 +120,22 @@ export async function findByIdentifier(
 }
 
 /**
+ * The social profiles a company holds as it is now, grouped as groupSocials
+ * gives them: a merged-away company answers with its survivor's, since
+ * merging moves the identifiers.
+ */
+export async function socialsOf(tx: Tx, companyId: string): Promise<Socials> {
+  const company = await resolve(tx, companyId);
+  if (!company) return {};
+  const rows = await tx<Pick<IdentifierRow, "type" | "value">[]>`
+    select type, value from company_identifiers
+    where company_id = ${company.id} and type = 'social'
+    order by id
+  `;
+  return groupSocials(rows);
+}
+
+/**
  * The phones and emails the registry holds for each of these companies, in
  * the order they were recorded, so the first is the longest known. Companies
  * with neither are absent.
@@ -198,8 +216,9 @@ export async function get(
   const company = await resolve(tx, id);
   if (!company) return undefined;
 
+  // In the order recorded: a network's first profile is the one the home page linked.
   const identifiers = await tx<IdentifierRow[]>`
-    select * from company_identifiers where company_id = ${company.id} order by type, value
+    select * from company_identifiers where company_id = ${company.id} order by type, id
   `;
   // RLS keeps both of these to the calling tenant.
   const [tenantView] = await tx<Record<string, unknown>[]>`

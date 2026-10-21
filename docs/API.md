@@ -272,7 +272,8 @@ company is private to it.
 ```
 
 `source.type` is `rfq`, `import` or `api`. Identifier types are `cr`, `vat`,
-`domain`, `gmaps` (strong: they merge) and `phone`, `email` (weak: they link).
+`domain`, `gmaps` (strong: they merge) and `phone`, `email`, `social` (weak:
+they link).
 A domain is stored as its registrable domain (`https://www.shop.example.com.sa/x`
 → `example.com.sa`, and `com`, `net`, `org`, `gov`, `edu`, `ac`, `co`, `sch` or
 `med` under any two-letter country code is a suffix too); one on a shared host such as `salla.sa`, `instagram.com`
@@ -280,7 +281,24 @@ or `business.site`, or on a site builder or link page such as `site123.me`,
 `weebly.com`, `godaddysites.com` or `bio.link`, is rejected as `shared host` and
 kept only in the source's `data`. An email also yields its domain, unless that is a free-mail provider or
 a shared host. `gmaps` is a Google Maps place id or cid exactly as given
-(`[A-Za-z0-9:_-]`, up to 200). `enrich: true` asks the registrar about a `cr`
+(`[A-Za-z0-9:_-]`, up to 200). A `social` is a company's profile on a social
+network, given as a link and stored in canonical form, no scheme, lower-cased:
+
+| Network | Stored as | From |
+| --- | --- | --- |
+| LinkedIn | `linkedin.com/company/<slug>` | any `*.linkedin.com/company/<slug>/…`; anything after the slug dropped |
+| Instagram | `instagram.com/<handle>` | `instagram.com/<handle>` |
+| X | `x.com/<handle>` | `x.com` and `twitter.com` |
+| Facebook | `facebook.com/<page>` or `facebook.com/profile.php?id=<n>` | `facebook.com`, `fb.com`, `m.`, `web.` and locale subdomains |
+| TikTok | `tiktok.com/@<handle>` | `tiktok.com/@<handle>` |
+| YouTube | `youtube.com/@<handle>`, `/channel/<id>`, `/c/<name>`, `/user/<name>` | those four forms |
+| Snapchat | `snapchat.com/add/<handle>` | that form |
+
+A person's profile (`linkedin.com/in/…`), a post, a video, a share or login
+link, or a network's own feature page (`instagram.com/explore`,
+`x.com/intent/…`) is rejected as `not a social profile`. A social never merges
+two companies: a page can link its parent's, a franchise brand's or its web
+agency's profile. `enrich: true` asks the registrar about a `cr`
 first, when a lookup is configured. Sources `web` and `maps` are written by
 discovery itself, never by a caller.
 
@@ -291,12 +309,20 @@ or `company.updated`, and `company.merged` when two records turn out to be one.
 
 Follows a merge: asking for a merged-away id returns the survivor.
 
-→ `200 { "company", "identifiers", "tenantView", "sources" }` or `404`.
-`tenantView` and `sources` are yours only.
+→ `200 { "company", "identifiers", "tenantView", "sources", "socials" }` or `404`.
+`tenantView` and `sources` are yours only. `socials` are the `social`
+identifiers as links, grouped by network, LinkedIn first, keys only for the
+networks present:
+
+```json
+"socials": { "linkedin": ["https://linkedin.com/company/acme"],
+             "instagram": ["https://instagram.com/acme", "https://instagram.com/acme.ar"] }
+```
 
 ### `GET /v1/companies?identifier=cr:1010123456` — tenant JWT
 
-Same shape, found by identifier. The value is normalised before matching.
+Same shape, found by identifier. The value is normalised before matching, so
+`social:https://www.linkedin.com/company/acme/` finds `linkedin.com/company/acme`.
 
 ### `PUT /v1/companies/:id/view` — tenant JWT
 
@@ -1381,11 +1407,14 @@ Ranked best first (`rank` is 1.. within each country), paged with `limit` and
                "cities": ["Riyadh"], "quality": "full", "profiledAt": "…" },
   "identifiers": [{ "type": "domain", "value": "example.com.sa" },
                   { "type": "gmaps", "value": "ChIJ…" },
-                  { "type": "phone", "value": "+966…" }] }
+                  { "type": "phone", "value": "+966…" },
+                  { "type": "social", "value": "linkedin.com/company/acme" }],
+  "socials": { "linkedin": ["https://linkedin.com/company/acme"] } }
 ```
 
 `profile` is `null` for a company without one. `identifiers` are its
-`domain`, `email`, `gmaps` and `phone` values. Each row also has `tier`
+`domain`, `email`, `gmaps`, `phone` and `social` values; `socials` are the
+`social` ones as links, grouped as on a company (`{}` when there are none). Each row also has `tier`
 (`found`: this search found, read and saved it; `pool`: already in the pool and
 matched), `persona` (`id`, `name`, or `null`), `fit` (`strong`, `weak` or
 `null`) and `evidence`: quotes checked against the page they came from, each
@@ -1417,7 +1446,32 @@ kept candidates in triage order, up to `DISCOVERY_MAX_READS` per task (default
   or whose listing carries the saved name (otherwise kept as `listingCid` on
   the source); a CR only when Wathq gives exactly the same name;
 - a quote must be 12–300 characters once folded and appear on its page as
-  whole words.
+  whole words;
+- social profiles are taken from every link of the pages read, the whole page
+  with its header, nav and footer (Firecrawl's `rawHtml`, or the fetched HTML),
+  by pattern, never from Claude: at most 3 per network, the first the home
+  page's, stored as weak `social` identifiers and listed as `socials` on the
+  source; share buttons are not profiles;
+- when the pages linked no LinkedIn, Serper is configured and the matched pool
+  company holds none, one web query `<name> site:linkedin.com/company`
+  (unquoted, the name without a bracketed aside, a trailing branch such as
+  `Riyadh Branch` or `فرع الرياض`, punctuation and legal-form or trade words;
+  the country's `gl`, `hl: en`, answered from the cache when it can be) looks
+  for one, a Maps-only company by its listing name. The first hit whose link is
+  a `linkedin.com/company/<slug>` page and whose title (less a trailing
+  `| LinkedIn` or `- LinkedIn`, each side of a bilingual `A | B` title on its
+  own) or slug (hyphens as spaces) is the saved name, with or without its aside
+  and branch, and whose page is placed in the country, is taken: some listing of
+  the same page has, in its title or snippet, the company's own domain as a host
+  name, a country name of more than one word (`Saudi Arabia`), or a location as
+  LinkedIn writes one, two places either side of a comma (`Dammam, Saudi
+  Arabia`, `Riyadh, Riyadh`), the places being the names and cities of the
+  country's `discovery.country` row. A lone word (`saudi`, `المملكة`) or the
+  LinkedIn host (`sa.linkedin.com`, which serves every company's page) places
+  nothing, and nor does a place word in the company's own name, and recorded on the source as `linkedinLookup: { q, url, title }`;
+  no such hit is a miss. It is on the queries log with `lookup: linkedin`. A
+  failed call saves the company without; a refused key stops the lookups for
+  the rest of the task, which carries on. A lookup never fails a candidate.
 
 A candidate is "fresh" (not read again) when its company was profiled from the
 web in the last 90 days, before this job started.
@@ -1435,7 +1489,9 @@ keywords.
 Counts from reading: `read`, `read_failed`, `read_skipped_fresh`,
 `reads_capped`, `firecrawl`, `fetch_fallback`, `extracted`, `quotes_checked`,
 `quotes_dropped`, `saved`, `not_saved`, `extract_failed`, `extract_capped`,
-`claude_calls`. Candidates are marked `extracted`, `not_saved` or `failed` as
+`claude_calls`, `socials` (companies saved with at least one), `linkedin_pages`
+(LinkedIn linked from the pages), `linkedin_lookups`, `linkedin_found`,
+`linkedin_lookup_failed`. Candidates are marked `extracted`, `not_saved` or `failed` as
 they are read, with a reason; the candidates route returns each one's checked
 `evidence`.
 
@@ -1445,8 +1501,10 @@ The same results as a file to download: `text/csv; charset=utf-8` with a
 byte-order mark (so a spreadsheet reads Arabic correctly), `Content-Disposition:
 attachment` named after the product, side, country and date, at most 2 000
 rows. Columns: `rank, country, tier, score, company, company_id, persona, fit,
-domains, phones, emails, google_maps_ids, products, roles, cities,
-profile_quality, profiled_at, evidence, reasons`; lists are joined with `; `,
+domains, phones, emails, google_maps_ids, linkedin, socials, products, roles,
+cities, profile_quality, profiled_at, evidence, reasons`; `linkedin` and
+`socials` (every network, LinkedIn first) are links as in `socials` on a
+result; lists are joined with `; `,
 evidence as `claim: "quote" (url)` joined with ` | `. A text cell from a web page
 that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is
 prefixed with `'`. `404` for an unknown job.
@@ -1543,8 +1601,9 @@ it the window applies (default `7d`). `kind` is `web` or `places`; `cached`
 is `true` or `false`. Paged with `limit` and `cursor` (the last row's `id`).
 Each row: `id`, `at`, `tenantId`, `tenantName`, `jobId`, `product` (the
 identified name, else as entered), `side`, `taskId`, `country`, `persona`
-(the persona's name, `null` when it is gone), `kind`, `q`, `gl`, `hl`,
-`cached`, `credits` (0 when cached), `usd` and `hits`.
+(the persona's name, `null` when it is gone or for a lookup), `kind`, `q`,
+`gl`, `hl`, `cached`, `credits` (0 when cached), `usd`, `hits` and `lookup`
+(`linkedin` for a LinkedIn lookup about one company, else `null`).
 
 #### Events
 
@@ -1559,7 +1618,7 @@ identified name, else as entered), `side`, `taskId`, `country`, `persona`
 | `discovery.job.planned` | `jobId`, `product` (the identified name), `personas` (names) |
 | `discovery.job.deferred` | `jobId`, `resetsAt` |
 | `discovery.task.deferred` | `jobId`, `taskId`, `country`, `resetsAt` |
-| `discovery.task.queried` | one per query, as it happens: `jobId`, `taskId`, `country`, `personaId`, `provider` (`serper`), `kind` (`web`, `places`), `q`, `gl`, `hl`, `page`, `cached`, `credits` (what Serper charged; 0 from the cache), `hits` |
+| `discovery.task.queried` | one per query, as it happens: `jobId`, `taskId`, `country`, `personaId`, `provider` (`serper`), `kind` (`web`, `places`), `q`, `gl`, `hl`, `page`, `cached`, `credits` (what Serper charged; 0 from the cache), `hits`; a LinkedIn lookup also has `lookup: 'linkedin'`, with `personaId: null` |
 
 All of them have `subjectType: "discovery_job"` and the job's id as `subjectId`,
 so one filter reads a job's whole history. Every rank also writes a

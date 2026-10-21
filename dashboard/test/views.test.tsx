@@ -197,6 +197,33 @@ describe('discovery', () => {
     expect(html).toContain('results');
   });
 
+  it('shows a result’s socials as links, LinkedIn first, and its other identifiers once', async () => {
+    const { ResultTable } = await import('../src/views/discovery.js');
+    const html = render(<ResultTable rows={fixtures.discoveryResults} />);
+    const linkedin = html.indexOf('href="https://linkedin.com/company/riyadh-diesel"');
+    expect(linkedin).toBeGreaterThan(-1);
+    expect(html.indexOf('href="https://instagram.com/riyadhdiesel"')).toBeGreaterThan(linkedin);
+    expect(html).toContain('target="_blank" rel="noopener noreferrer">https://linkedin.com/company/riyadh-diesel<');
+    expect(html).toContain('riyadh-diesel.com.sa');
+    // The social rows are the links, not a second plain listing.
+    expect(html).not.toContain('>social<');
+  });
+
+  it('shows the socials counts with the others, and which queries were LinkedIn lookups', async () => {
+    mockApi();
+    const { DiscoveryJob, QueryTable } = await import('../src/views/discovery.js');
+    const html = render(
+      <DiscoveryJob detail={fixtures.discoveryJobDetail} loadedAt={null} country="" onCountry={() => {}} />,
+    );
+    for (const k of ['socials', 'linkedin_pages', 'linkedin_lookups', 'linkedin_found', 'linkedin_lookup_failed']) {
+      expect(html).toContain(`>${k}<`);
+    }
+    const queries = render(<QueryTable rows={fixtures.discoveryQueries} />);
+    expect(queries).toContain('site:linkedin.com/company');
+    expect(queries).toContain('linkedin lookup');
+    expect(queries).toContain('Ready-mix concrete plants');
+  });
+
   it('offers did-you-mean choices before a search starts', async () => {
     mockApi();
     const { DidYouMean } = await import('../src/views/discovery.js');

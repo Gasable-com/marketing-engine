@@ -161,6 +161,8 @@ export type DiscoveryQuery = {
   credits: number;
   usd: number;
   hits: number;
+  /** Set when the query looked up one company (its LinkedIn page) rather than searched. */
+  lookup?: 'linkedin' | null;
 };
 
 export type EventRow = {
@@ -519,6 +521,8 @@ export type DiscoveryResult = {
     profiledAt: string | null;
   } | null;
   identifiers: { type: string; value: string }[];
+  /** The `social` identifiers as links, by network, LinkedIn first: the engine groups them. */
+  socials?: Record<string, string[]>;
 };
 
 export type RfqSearchRow = {
