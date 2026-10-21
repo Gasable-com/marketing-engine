@@ -28,8 +28,8 @@ import type { AuthVars } from '../middleware/auth.js';
  * Called by the portal's backend with its tenant token; `requesterRef` is the
  * portal's own id for the user who asked, and every search belongs to it.
  *
- * Responses carry a company's name, city and why it matches, never its
- * contacts: the relationship stays on the marketplace.
+ * A result carries a company's name, city, why it matches and the phones,
+ * emails and website the registry holds for it (brief 27).
  */
 export const portalDiscovery = new Hono<AuthVars>();
 
