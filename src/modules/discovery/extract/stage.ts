@@ -1,14 +1,25 @@
 import { db, withTenant } from '../../../db/client.js';
 import { env } from '../../../env.js';
-import { companyLookup, normalizeDomain, normalizeName, upsert, type RawIdentifier } from '../../../spine/registry/index.js';
+import {
+  companyLookup,
+  normalizeDomain,
+  normalizeName,
+  socialsOf,
+  upsert,
+  type RawIdentifier,
+} from '../../../spine/registry/index.js';
 import { ask, releaseClaudeCall, reserveClaudeCall } from '../claude.js';
 import { PermanentError, UsageLimitError } from '../errors.js';
 import { setProfile } from '../index.js';
 import type { Counts, JobRow, PersonaRow, TaskRow } from '../jobs.js';
 import { Extraction, extractPrompt } from '../prompts.js';
-import { contactsIn, readSite } from '../read/index.js';
+import { contactsIn, readSite, socialsIn } from '../read/index.js';
+import type { Link } from '../read/text.js';
+import { countrySettings } from '../search/country.js';
+import { serperConfigured } from '../search/serper.js';
 import { personasOf } from '../search/stages.js';
 import { checkExtraction, sameName, type Source } from './check.js';
+import { lookupLinkedin, type LinkedinFound } from './linkedin.js';
 
 /**
  * `read_extract`: for each kept candidate, in triage order, read its pages
@@ -37,6 +48,9 @@ type CandidateRow = {
   fit: 'strong' | 'weak' | null;
   company_id: string | null;
 };
+
+/** The task's LinkedIn lookups: the country's `gl` once, and whether they stopped. */
+type Lookups = { stopped: boolean; gl: string | null };
 
 /** Add to the task's counts as it goes, so a deferral loses nothing. */
 async function bump(task: TaskRow, add: Counts): Promise<void> {
@@ -96,6 +110,7 @@ export async function runReadExtract(job: JobRow, task: TaskRow): Promise<Counts
     `,
   ]);
   let processed = done[0]?.n ?? 0;
+  const lookups: Lookups = { stopped: !serperConfigured(), gl: null };
 
   // Fresh ones first: profiled from the web lately, before this job began.
   // They are ranked from what is stored, and never count against the caps.
@@ -118,7 +133,7 @@ export async function runReadExtract(job: JobRow, task: TaskRow): Promise<Counts
     processed += 1;
 
     try {
-      const outcome = await readAndExtract(job, task, c, personas);
+      const outcome = await readAndExtract(job, task, c, personas, lookups);
       if (outcome === 'budget') {
         await bump(task, { extract_capped: toRead.length - i });
         break;
@@ -151,15 +166,18 @@ async function readAndExtract(
   task: TaskRow,
   c: CandidateRow,
   personas: PersonaRow[],
+  lookups: Lookups,
 ): Promise<'done' | 'budget'> {
   // The budget first, so a spent one costs no reading.
   if (!(await reserveClaudeCall(job.tenant_id, job.id))) return 'budget';
 
   // The pages, in memory only.
   const sources: Source[] = [];
+  const links: Link[] = [];
   if (c.domain) {
     const read = await readSite({ url: c.url, domain: c.domain });
     sources.push(...read.pages);
+    links.push(...read.links);
     await bump(task, {
       read: read.pages.length > 0 ? 1 : 0,
       read_failed: read.pages.length === 0 ? 1 : 0,
@@ -250,6 +268,16 @@ async function readAndExtract(
     identifiers.push({ type: 'cr', value: crClaimed });
   }
 
+  // Socials are the pages' own links, by pattern, as contacts are. A social
+  // is weak: one the web agency's footer gives two companies merges nothing.
+  const socials = siteRead ? socialsIn(links) : [];
+  const linkedinOnPages = socials.some((s) => s.startsWith('linkedin.com/'));
+  const linkedin = linkedinOnPages ? null : await findLinkedin(task, c.company_id, result.name.value, lookups);
+  identifiers.push(
+    ...socials.map((value) => ({ type: 'social', value })),
+    ...(linkedin ? [{ type: 'social', value: linkedin.value }] : []),
+  );
+
   const quotes = [
     { field: 'name', quote: result.name.quote, url: result.name.url },
     ...(result.nameAr ? [{ field: 'nameAr', quote: result.nameAr.quote, url: result.nameAr.url }] : []),
@@ -277,6 +305,9 @@ async function readAndExtract(
           quotes,
           ...(crClaimed ? { crClaimed } : {}),
           ...(c.gmaps && !gmapsIsIt ? { listingCid: c.gmaps } : {}),
+          socials,
+          // Where a LinkedIn no page linked came from.
+          ...(linkedin ? { linkedinLookup: { q: linkedin.q, url: linkedin.url, title: linkedin.title } } : {}),
         },
       },
     });
@@ -303,8 +334,40 @@ async function readAndExtract(
     fit: result.fit,
     evidence: result.evidence,
   });
-  await bump(task, { saved: 1 });
+  await bump(task, {
+    saved: 1,
+    socials: identifiers.some((i) => i.type === 'social') ? 1 : 0,
+    linkedin_pages: linkedinOnPages ? 1 : 0,
+  });
   return 'done';
+}
+
+/**
+ * One Serper query for a LinkedIn page the pages did not link, unless the
+ * pool already holds one. It never fails a candidate: a failed call saves the
+ * company without, and a refused key stops the lookups for the rest of the
+ * task, which carries on. Every lookup asked is counted; each ends found,
+ * missed or failed.
+ */
+async function findLinkedin(
+  task: TaskRow,
+  companyId: string | null,
+  name: string,
+  lookups: Lookups,
+): Promise<LinkedinFound | null> {
+  if (lookups.stopped) return null;
+  if (companyId && (await withTenant(task.tenant_id, (tx) => socialsOf(tx, companyId))).linkedin) return null;
+  lookups.gl ??= (await countrySettings(task.tenant_id, task.country)).gl;
+  await bump(task, { linkedin_lookups: 1 });
+  try {
+    const found = await lookupLinkedin(task, name, lookups.gl);
+    if (found) await bump(task, { linkedin_found: 1 });
+    return found;
+  } catch (err) {
+    if (err instanceof PermanentError) lookups.stopped = true;
+    await bump(task, { linkedin_lookup_failed: 1 });
+    return null;
+  }
 }
 
 /** Whether Wathq (when configured) names this CR's company as we did. */

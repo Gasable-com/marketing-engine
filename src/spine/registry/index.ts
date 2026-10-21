@@ -9,6 +9,7 @@ import {
 } from "./identifiers.js";
 import { companyLookup, type CompanyFacts } from "./lookup/index.js";
 import { normalizeName } from "./names.js";
+import { groupSocials, type Socials } from "./socials.js";
 
 export * from "./identifiers.js";
 export * from "./lookup/index.js";
@@ -116,6 +117,22 @@ export async function findByIdentifier(
     select * from company_identifiers where type = ${type} and value = ${value}
   `;
   return row ? resolve(tx, row.company_id) : undefined;
+}
+
+/**
+ * The social profiles a company holds as it is now, grouped as groupSocials
+ * gives them: a merged-away company answers with its survivor's, since
+ * merging moves the identifiers.
+ */
+export async function socialsOf(tx: Tx, companyId: string): Promise<Socials> {
+  const company = await resolve(tx, companyId);
+  if (!company) return {};
+  const rows = await tx<Pick<IdentifierRow, "type" | "value">[]>`
+    select type, value from company_identifiers
+    where company_id = ${company.id} and type = 'social'
+    order by id
+  `;
+  return groupSocials(rows);
 }
 
 /**
