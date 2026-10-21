@@ -12,6 +12,7 @@ import { normalizeName } from "./names.js";
 
 export * from "./identifiers.js";
 export * from "./lookup/index.js";
+export * from "./socials.js";
 export { foldText, normalizeName } from "./names.js";
 
 /**

@@ -3,7 +3,9 @@ import { createApp } from '../src/api/app.js';
 import { db, withTenant } from '../src/db/client.js';
 import { resetFake } from '../src/modules/messaging/adapters/fake.js';
 import {
+  canonicalSocial,
   fakeLookup,
+  groupSocials,
   normalizeIdentifiers,
   normalizeName,
   resetFakeLookup,
@@ -83,6 +85,117 @@ describe('normalisation', () => {
       { type: 'email', value: 'sales@alfalah.com.sa' },
       { type: 'domain', value: 'alfalah.com.sa' },
     ]);
+  });
+});
+
+describe('social profiles', () => {
+  it.each([
+    // LinkedIn: any subdomain, anything after the slug dropped.
+    ['https://www.linkedin.com/company/gasable/mycompany/verification/', 'linkedin', 'linkedin.com/company/gasable'],
+    ['https://sa.linkedin.com/company/x?trk=public_profile', 'linkedin', 'linkedin.com/company/x'],
+    ['linkedin.com/company/Acme-Co/about/', 'linkedin', 'linkedin.com/company/acme-co'],
+    ['//ae.linkedin.com/company/acme', 'linkedin', 'linkedin.com/company/acme'],
+    // Instagram.
+    ['https://www.instagram.com/Acme.Co/', 'instagram', 'instagram.com/acme.co'],
+    ['https://instagram.com/acme?igsh=abc', 'instagram', 'instagram.com/acme'],
+    // X, also as twitter.com.
+    ['https://twitter.com/Acme', 'x', 'x.com/acme'],
+    ['https://x.com/acme_sa?lang=ar', 'x', 'x.com/acme_sa'],
+    ['https://mobile.twitter.com/acme', 'x', 'x.com/acme'],
+    // Facebook: fb.com, m., web., locale subdomains, and profile.php by id.
+    ['https://m.facebook.com/AcmeCo/', 'facebook', 'facebook.com/acmeco'],
+    ['https://web.facebook.com/acmeco?_rdc=1', 'facebook', 'facebook.com/acmeco'],
+    ['https://ar-ar.facebook.com/acme.sa', 'facebook', 'facebook.com/acme.sa'],
+    ['https://fb.com/acmeco', 'facebook', 'facebook.com/acmeco'],
+    ['https://www.facebook.com/profile.php?id=100064&ref=footer', 'facebook', 'facebook.com/profile.php?id=100064'],
+    // TikTok.
+    ['https://www.tiktok.com/@Acme.sa?lang=en', 'tiktok', 'tiktok.com/@acme.sa'],
+    // YouTube's four forms; a channel id keeps its case, its link needs it.
+    ['https://www.youtube.com/@AcmeCo', 'youtube', 'youtube.com/@acmeco'],
+    ['https://youtube.com/channel/UCa1B2c3/videos', 'youtube', 'youtube.com/channel/UCa1B2c3'],
+    ['https://www.youtube.com/c/AcmeCo', 'youtube', 'youtube.com/c/acmeco'],
+    ['https://www.youtube.com/user/acmeco', 'youtube', 'youtube.com/user/acmeco'],
+    // Snapchat.
+    ['https://www.snapchat.com/add/Acme_sa?share_id=1', 'snapchat', 'snapchat.com/add/acme_sa'],
+  ])('takes %s', (url, network, value) => {
+    expect(canonicalSocial(url)).toEqual({ network, value });
+  });
+
+  it.each([
+    'https://www.linkedin.com/in/someone/',
+    'https://www.linkedin.com/school/kfupm/',
+    'https://www.linkedin.com/showcase/acme-labs/',
+    'https://www.linkedin.com/jobs/view/123',
+    'https://www.linkedin.com/pulse/some-article',
+    'https://www.linkedin.com/posts/acme_activity-1',
+    'https://www.linkedin.com/feed/',
+    'https://www.linkedin.com/shareArticle?mini=true&url=https://acme.sa',
+    'https://www.linkedin.com/sharing/share-offsite/?url=https://acme.sa',
+    'https://www.linkedin.com/company/',
+    'https://www.instagram.com/p/Cx1/',
+    'https://www.instagram.com/reel/Cx1/',
+    'https://www.instagram.com/explore/tags/acme/',
+    'https://www.instagram.com/accounts/login/',
+    'https://www.instagram.com/stories/acme/1/',
+    'https://twitter.com/intent/tweet?text=hi',
+    'https://twitter.com/share?url=https://acme.sa',
+    'https://x.com/i/flow/login',
+    'https://x.com/hashtag/acme',
+    'https://x.com/search?q=acme',
+    'https://www.facebook.com/sharer/sharer.php?u=https://acme.sa',
+    'https://www.facebook.com/sharer.php?u=https://acme.sa',
+    'https://www.facebook.com/share.php?u=https://acme.sa',
+    'https://www.facebook.com/dialog/share?app_id=1',
+    'https://www.facebook.com/plugins/page.php?href=x',
+    'https://www.facebook.com/events/123/',
+    'https://www.facebook.com/photo/?fbid=1',
+    'https://www.facebook.com/watch/?v=1',
+    'https://www.facebook.com/tr?id=1&ev=PageView',
+    'https://www.facebook.com/profile.php',
+    'https://www.facebook.com/',
+    'https://www.tiktok.com/@acme/video/123',
+    'https://www.tiktok.com/tag/acme',
+    'https://vm.tiktok.com/ZMabc/',
+    'https://www.youtube.com/watch?v=abc',
+    'https://www.youtube.com/embed/abc',
+    'https://www.youtube.com/playlist?list=PL1',
+    'https://www.youtube.com/shorts/abc',
+    'https://youtu.be/abc',
+    'https://www.snapchat.com/discover/acme',
+    'https://acme.sa/linkedin.com/company/acme',
+    'mailto:info@acme.sa',
+    'not a url at all',
+  ])('refuses %s', (url) => {
+    expect(canonicalSocial(url)).toBeNull();
+  });
+
+  it('normalises a social identifier and rejects what is not a profile', () => {
+    const result = normalizeIdentifiers([
+      { type: 'social', value: 'https://sa.linkedin.com/company/Acme?trk=x' },
+      { type: 'social', value: 'https://www.linkedin.com/company/acme/' },
+      { type: 'social', value: 'https://www.linkedin.com/in/someone' },
+    ]);
+    expect(result.identifiers).toEqual([{ type: 'social', value: 'linkedin.com/company/acme' }]);
+    expect(result.rejected).toEqual([
+      { type: 'social', value: 'https://www.linkedin.com/in/someone', reason: 'not a social profile' },
+    ]);
+  });
+
+  it('groups profiles into links, LinkedIn first, only networks present', () => {
+    const socials = groupSocials([
+      { type: 'domain', value: 'acme.sa' },
+      { type: 'social', value: 'instagram.com/acme' },
+      { type: 'social', value: 'x.com/acme' },
+      { type: 'social', value: 'instagram.com/acme.ar' },
+      { type: 'social', value: 'linkedin.com/company/acme' },
+    ]);
+    expect(socials).toEqual({
+      linkedin: ['https://linkedin.com/company/acme'],
+      instagram: ['https://instagram.com/acme', 'https://instagram.com/acme.ar'],
+      x: ['https://x.com/acme'],
+    });
+    expect(Object.keys(socials)).toEqual(['linkedin', 'instagram', 'x']);
+    expect(groupSocials([{ type: 'phone', value: PHONE }])).toEqual({});
   });
 });
 
@@ -234,6 +347,100 @@ describe('upsert', () => {
     expect(source!.data.conflicts).toEqual([
       { type: 'phone', value: PHONE, heldBy: a.company.id },
     ]);
+  });
+});
+
+describe('social identifiers', () => {
+  it('leaves a social profile with the first company and merges nothing', async () => {
+    // A web agency's Instagram, linked from two clients' footers.
+    const agency = 'https://www.instagram.com/webagency/';
+    const a = await postCompany({
+      name: 'Company A',
+      identifiers: [
+        { type: 'cr', value: CR },
+        { type: 'social', value: agency },
+      ],
+      source: { type: 'api', ref: 'a' },
+    });
+    const b = await postCompany({
+      name: 'Company B',
+      identifiers: [
+        { type: 'cr', value: OTHER_CR },
+        { type: 'social', value: agency },
+      ],
+      source: { type: 'api', ref: 'b' },
+    });
+
+    expect(b.company.id).not.toBe(a.company.id);
+    expect(b.mergedFrom).toEqual([]);
+
+    const holders = await db()<{ company_id: string }[]>`
+      select company_id from company_identifiers where type = 'social'
+    `;
+    expect(holders).toEqual([{ company_id: a.company.id }]);
+
+    const [source] = await withTenant(
+      TENANT_A,
+      (tx) => tx<{ data: { conflicts?: unknown[] } }[]>`
+        select data from company_sources where company_id = ${b.company.id}
+      `,
+    );
+    expect(source!.data.conflicts).toEqual([
+      { type: 'social', value: 'instagram.com/webagency', heldBy: a.company.id },
+    ]);
+  });
+
+  it('stores a posted profile in canonical form, rejects a person, and finds by it', async () => {
+    const created = await postCompany({
+      name: 'Acme',
+      identifiers: [
+        { type: 'social', value: 'https://www.linkedin.com/company/Acme/' },
+        { type: 'social', value: 'https://m.facebook.com/AcmeCo/' },
+        { type: 'social', value: 'https://www.linkedin.com/in/acme-founder' },
+        { type: 'social', value: 'https://www.facebook.com/sharer/sharer.php?u=https://acme.sa' },
+      ],
+      source: { type: 'api', ref: 'a' },
+    });
+
+    const [source] = await withTenant(
+      TENANT_A,
+      (tx) => tx<{ data: { rejected?: { reason: string }[] } }[]>`
+        select data from company_sources where company_id = ${created.company.id}
+      `,
+    );
+    expect(source!.data.rejected?.map((r) => r.reason)).toEqual([
+      'not a social profile',
+      'not a social profile',
+    ]);
+
+    type Detail = {
+      company: { id: string };
+      identifiers: { type: string; value: string }[];
+      socials: Record<string, string[]>;
+    };
+    const expected = {
+      linkedin: ['https://linkedin.com/company/acme'],
+      facebook: ['https://facebook.com/acmeco'],
+    };
+
+    for (const query of ['social:linkedin.com/company/acme', 'social:https://sa.linkedin.com/company/acme?trk=x']) {
+      const res = await request(`/v1/companies?identifier=${encodeURIComponent(query)}`);
+      expect(res.status).toBe(200);
+      const detail = (await res.json()) as Detail;
+      expect(detail.company.id).toBe(created.company.id);
+      expect(detail.socials).toEqual(expected);
+      expect(Object.keys(detail.socials)).toEqual(['linkedin', 'facebook']);
+      expect(detail.identifiers.filter((i) => i.type === 'social').map((i) => i.value).sort()).toEqual([
+        'facebook.com/acmeco',
+        'linkedin.com/company/acme',
+      ]);
+    }
+
+    const byId = await request(`/v1/companies/${created.company.id}`);
+    expect(((await byId.json()) as Detail).socials).toEqual(expected);
+
+    const person = await request('/v1/companies?identifier=social:linkedin.com/in/acme-founder');
+    expect(person.status).toBe(404);
   });
 });
 

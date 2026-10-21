@@ -1,14 +1,16 @@
 import { env } from '../../env.js';
 import { normalize } from '../contacts/normalize.js';
+import { canonicalSocial } from './socials.js';
 
-export const IDENTIFIER_TYPES = ['cr', 'vat', 'domain', 'phone', 'email', 'gmaps'] as const;
+export const IDENTIFIER_TYPES = ['cr', 'vat', 'domain', 'phone', 'email', 'gmaps', 'social'] as const;
 export type IdentifierType = (typeof IDENTIFIER_TYPES)[number];
 
 /**
  * Strong identifiers belong to exactly one company, so two records sharing one
  * are the same company and get merged. Weak ones link but never merge: a phone
  * number or a shared mailbox moves between companies over time. A Google Maps
- * place id names one place, so it is strong.
+ * place id names one place, so it is strong. A social profile is weak: a page
+ * can link its parent's, a franchise brand's or its web agency's.
  */
 export const STRONG_TYPES: readonly IdentifierType[] = ['cr', 'vat', 'domain', 'gmaps'];
 
@@ -250,6 +252,16 @@ export function normalizeIdentifiers(
           break;
         }
         add('gmaps', value);
+        break;
+      }
+
+      case 'social': {
+        const profile = canonicalSocial(value);
+        if (!profile) {
+          rejected.push({ type, value, reason: 'not a social profile' });
+          break;
+        }
+        add('social', profile.value);
         break;
       }
 
