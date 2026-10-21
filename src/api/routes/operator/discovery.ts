@@ -352,7 +352,7 @@ async function resultRows(
            p.quality, p.profiled_at,
            coalesce((
              select json_agg(json_build_object('type', i.type, 'value', i.value)
-                             order by i.type, i.value)
+                             order by i.type, i.id)
              from company_identifiers i
              where i.company_id = c.id and i.type in ('domain', 'phone', 'email', 'gmaps', 'social')
            ), '[]'::json) as identifiers

@@ -98,6 +98,7 @@ describe('social profiles', () => {
     // Instagram.
     ['https://www.instagram.com/Acme.Co/', 'instagram', 'instagram.com/acme.co'],
     ['https://instagram.com/acme?igsh=abc', 'instagram', 'instagram.com/acme'],
+    ['https://www.instagram.com/_u/Acme/', 'instagram', 'instagram.com/acme'],
     // X, also as twitter.com.
     ['https://twitter.com/Acme', 'x', 'x.com/acme'],
     ['https://x.com/acme_sa?lang=ar', 'x', 'x.com/acme_sa'],
@@ -153,6 +154,17 @@ describe('social profiles', () => {
     'https://www.facebook.com/tr?id=1&ev=PageView',
     'https://www.facebook.com/profile.php',
     'https://www.facebook.com/',
+    // Not in the brief's table, but each would be one value for every company.
+    'https://www.facebook.com/p/Acme-Trading-100063123/',
+    'https://www.facebook.com/share/1AbC/',
+    'https://www.facebook.com/share/p/1AbC/',
+    'https://www.facebook.com/reel/1',
+    'https://www.facebook.com/videos/1',
+    'https://www.facebook.com/business/help',
+    'https://www.facebook.com/marketplace/item/1',
+    'https://developers.facebook.com/docs/x',
+    'https://l.facebook.com/l.php?u=https://acme.sa',
+    'https://www.instagram.com/_u/',
     'https://www.tiktok.com/@acme/video/123',
     'https://www.tiktok.com/tag/acme',
     'https://vm.tiktok.com/ZMabc/',
@@ -174,10 +186,14 @@ describe('social profiles', () => {
       { type: 'social', value: 'https://sa.linkedin.com/company/Acme?trk=x' },
       { type: 'social', value: 'https://www.linkedin.com/company/acme/' },
       { type: 'social', value: 'https://www.linkedin.com/in/someone' },
+      { type: 'social', value: 'facebook.com/share/xyz' },
+      { type: 'social', value: 'https://www.facebook.com/p/Acme-Trading-100063123/' },
     ]);
     expect(result.identifiers).toEqual([{ type: 'social', value: 'linkedin.com/company/acme' }]);
     expect(result.rejected).toEqual([
       { type: 'social', value: 'https://www.linkedin.com/in/someone', reason: 'not a social profile' },
+      { type: 'social', value: 'facebook.com/share/xyz', reason: 'not a social profile' },
+      { type: 'social', value: 'https://www.facebook.com/p/Acme-Trading-100063123/', reason: 'not a social profile' },
     ]);
   });
 
@@ -396,6 +412,9 @@ describe('social identifiers', () => {
       identifiers: [
         { type: 'social', value: 'https://www.linkedin.com/company/Acme/' },
         { type: 'social', value: 'https://m.facebook.com/AcmeCo/' },
+        // Not in alphabetical order: a network's profiles come back as recorded.
+        { type: 'social', value: 'https://instagram.com/acme.sa' },
+        { type: 'social', value: 'https://instagram.com/acme' },
         { type: 'social', value: 'https://www.linkedin.com/in/acme-founder' },
         { type: 'social', value: 'https://www.facebook.com/sharer/sharer.php?u=https://acme.sa' },
       ],
@@ -420,6 +439,7 @@ describe('social identifiers', () => {
     };
     const expected = {
       linkedin: ['https://linkedin.com/company/acme'],
+      instagram: ['https://instagram.com/acme.sa', 'https://instagram.com/acme'],
       facebook: ['https://facebook.com/acmeco'],
     };
 
@@ -429,9 +449,11 @@ describe('social identifiers', () => {
       const detail = (await res.json()) as Detail;
       expect(detail.company.id).toBe(created.company.id);
       expect(detail.socials).toEqual(expected);
-      expect(Object.keys(detail.socials)).toEqual(['linkedin', 'facebook']);
+      expect(Object.keys(detail.socials)).toEqual(['linkedin', 'instagram', 'facebook']);
       expect(detail.identifiers.filter((i) => i.type === 'social').map((i) => i.value).sort()).toEqual([
         'facebook.com/acmeco',
+        'instagram.com/acme',
+        'instagram.com/acme.sa',
         'linkedin.com/company/acme',
       ]);
     }

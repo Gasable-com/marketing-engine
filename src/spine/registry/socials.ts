@@ -16,13 +16,19 @@ const X_NOT = new Set([
   'intent', 'share', 'home', 'i', 'hashtag', 'search', 'login', 'signup', 'explore', 'settings', 'messages',
   'privacy', 'tos',
 ]);
-// `pages`, `pg`, `groups` and `people` are not in the brief's table, but the
-// segment after them is the name, so taking the first would store
-// `facebook.com/pages` for every company that has one.
+// The rest are not in the brief's table, but taking the first segment would
+// store one value for every company that links them. `pages`, `pg`, `groups`
+// and `people` have the name after them. `p` is how Facebook shows a page with
+// no username (`/p/Acme-1000…/`), `share` is what its Share button copies, and
+// the others are features; none can be a page's own name.
 const FACEBOOK_NOT = new Set([
   'sharer', 'dialog', 'login', 'plugins', 'events', 'photo', 'photos', 'watch', 'hashtag', 'help', 'policies',
   'privacy', 'tr', 'pages', 'pg', 'groups', 'people',
+  'p', 'share', 'reel', 'reels', 'videos', 'stories', 'media', 'business', 'marketplace', 'gaming', 'notes',
+  'profile', 'messages', 'friends', 'settings', 'about', 'legal', 'docs', 'ads', 'l',
 ]);
+/** Facebook's own sites, not a locale of the main one: docs, link redirects, its company pages. */
+const FACEBOOK_SITES = /^(developers|l|lm|about|transparency|graph)\.facebook\.com$/;
 
 /** A page or company name as the networks allow it, in any script. */
 const NAME = /^[\p{L}\p{M}\p{N}._-]+$/u;
@@ -51,8 +57,10 @@ export function canonicalSocial(url: string): SocialProfile | null {
   }
 
   if (onSite(host, 'instagram.com')) {
-    if (INSTAGRAM_NOT.has(first) || !/^[a-z0-9._]{1,30}$/.test(first)) return null;
-    return { network: 'instagram', value: `instagram.com/${first}` };
+    // `/_u/acme` is a link that opens the app on acme's profile.
+    const handle = first === '_u' ? (segments[1]?.toLowerCase() ?? '') : first;
+    if (INSTAGRAM_NOT.has(handle) || !/^[a-z0-9._]{1,30}$/.test(handle)) return null;
+    return { network: 'instagram', value: `instagram.com/${handle}` };
   }
 
   if (onSite(host, 'x.com') || onSite(host, 'twitter.com')) {
@@ -60,6 +68,7 @@ export function canonicalSocial(url: string): SocialProfile | null {
     return { network: 'x', value: `x.com/${first}` };
   }
 
+  if (FACEBOOK_SITES.test(host)) return null;
   if (host === 'facebook.com' || host.endsWith('.facebook.com') || onSite(host, 'fb.com')) {
     // A page with no name of its own is only reachable by its number.
     if (first === 'profile.php') {

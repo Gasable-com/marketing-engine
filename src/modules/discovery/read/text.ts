@@ -55,10 +55,10 @@ const TO_THE_END = new Set(['script', 'style']);
 
 /**
  * The page without comments and the blocks that are never read, cut to
- * MAX_HTML. One pass: each closing tag is looked for once, and a name with no
+ * `max`. One pass: each closing tag is looked for once, and a name with no
  * closing tag left is never looked for again.
  */
-function readable(html: string): string {
+function readable(html: string, max = MAX_HTML): string {
   const lower = html.toLowerCase();
   const unclosed = new Set<string>();
   const parts: string[] = [];
@@ -85,7 +85,7 @@ function readable(html: string): string {
     DROPPED.lastIndex = from;
   }
   parts.push(html.slice(from));
-  return parts.join('').slice(0, MAX_HTML);
+  return parts.join('').slice(0, max);
 }
 
 /** The index just past `</name ... >`, or -1. */
@@ -125,6 +125,8 @@ export type Link = { url: string; text: string };
 
 /** Where a link's text ends: its closing tag, or the next link. */
 const ANCHOR_END = /<\/?a[\s>/]/gi;
+/** A real page links a few hundred; past this it is a catalogue or hostile, and stopping bounds the work. */
+const MAX_LINKS = 10_000;
 const BASE = /<base\s(?:[^<>"']|"[^<"]{0,2000}"|'[^<']{0,2000}'){0,4000}>/i;
 
 /**
@@ -133,7 +135,9 @@ const BASE = /<base\s(?:[^<>"']|"[^<"]{0,2000}"|'[^<']{0,2000}'){0,4000}>/i;
  * has one; links in comments and scripts are not links.
  */
 export function linksIn(html: string, pageUrl: string): Link[] {
-  const page = readable(html);
+  // Not cut: the footer, where the socials are, comes last, and both readers
+  // already cap a page at MAX_BYTES.
+  const page = readable(html, Infinity);
   let baseUrl = pageUrl;
   // The base lives in the head, which readable() drops.
   const baseHref = hrefOf(BASE.exec(html.slice(0, MAX_HTML))?.[0] ?? '');
@@ -149,7 +153,8 @@ export function linksIn(html: string, pageUrl: string): Link[] {
   let end: number | null = null; // where the current link's text ends; -1 once none is left
   // Its own instance: htmlToText below runs A_TAG through replace, which resets lastIndex.
   const anchors = new RegExp(A_TAG.source, 'gi');
-  for (let m = anchors.exec(page); m; m = anchors.exec(page)) {
+  let seen = 0;
+  for (let m = anchors.exec(page); m && seen++ < MAX_LINKS; m = anchors.exec(page)) {
     const bodyStart = m.index + m[0].length;
     if (end === null || (end >= 0 && end < bodyStart)) {
       ANCHOR_END.lastIndex = bodyStart;

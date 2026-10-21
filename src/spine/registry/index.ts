@@ -216,8 +216,9 @@ export async function get(
   const company = await resolve(tx, id);
   if (!company) return undefined;
 
+  // In the order recorded: a network's first profile is the one the home page linked.
   const identifiers = await tx<IdentifierRow[]>`
-    select * from company_identifiers where company_id = ${company.id} order by type, value
+    select * from company_identifiers where company_id = ${company.id} order by type, id
   `;
   // RLS keeps both of these to the calling tenant.
   const [tenantView] = await tx<Record<string, unknown>[]>`

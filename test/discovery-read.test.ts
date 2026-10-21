@@ -533,6 +533,15 @@ describe('links', () => {
       { url: 'https://example.com/contact', text: 'Contact us' },
     ]);
   });
+
+  it('reads the footer of a page with more markup than the text cut', () => {
+    const widgets = '<div class="elementor-widget-wrap elementor-element-populated"><span>x</span></div>'.repeat(5000);
+    const html = `<body>${widgets}<footer><a href="https://www.linkedin.com/company/acme">in</a></footer></body>`;
+    expect(html.length).toBeGreaterThan(300_000);
+    const links = linksIn(html, 'https://acme.com/');
+    expect(links).toEqual([{ url: 'https://www.linkedin.com/company/acme', text: 'in' }]);
+    expect(socialsIn(links)).toEqual(['linkedin.com/company/acme']);
+  });
 });
 
 describe('contacts by pattern', () => {
