@@ -29,7 +29,8 @@ import type { AuthVars } from '../middleware/auth.js';
  * portal's own id for the user who asked, and every search belongs to it.
  *
  * A result carries a company's name, city, why it matches and the phones,
- * emails and website the registry holds for it (brief 27).
+ * emails, website (brief 27) and social profiles (brief 27c) the registry
+ * holds for it.
  */
 export const portalDiscovery = new Hono<AuthVars>();
 

@@ -17,7 +17,7 @@ What the portal team needs to add discovery to the supplier and corporate portal
 - **`requesterRef`** is your own id for the supplier or corporate using the portal: an opaque string, up to 200 characters. Send it on every discovery call.
   - Each search belongs to the requester that started it. Any other `requesterRef` gets `404`.
   - Your backend must take `requesterRef` from the logged-in session, never from the browser.
-- **Each result carries the company's contacts.** A result has the company's **name, city and why it matches**, and every **phone** and **email** the engine holds for it, plus its **website**: see "The contact fields" below. Nothing else that identifies it (a Maps id, a CR or a VAT number) is returned.
+- **Each result carries the company's contacts.** A result has the company's **name, city and why it matches**, and every **phone** and **email** the engine holds for it, plus its **website** and its **social profiles** (LinkedIn, Instagram and the rest): see "The contact fields" below. Nothing else that identifies it (a Maps id, a CR or a VAT number) is returned.
 - **Results are shown at once.** There is no review gate.
 - **Any country.** `countries` takes any real ISO 3166-1 code, and every country is searched the same way: in the languages companies there use, with its name and main cities. The first search in a country the engine has not searched before spends a little longer on "understanding the product" while it learns the country once.
 
@@ -55,7 +55,8 @@ What the portal team needs to add discovery to the supplier and corporate portal
          "persona": "Swimming pool operators & pool contractors", "fit": "strong",
          "why": ["Keeps pool water safe: \"Maintaining proper chlorine and pH levels for safety.\""],
          "phones": ["+966501234567", "+966112345678"], "emails": ["info@seerah.com.sa"],
-         "website": "https://seerah.com.sa" } ] }
+         "website": "https://seerah.com.sa",
+         "socials": { "linkedin": ["https://linkedin.com/company/seerah"], "instagram": ["https://instagram.com/seerah.sa"] } } ] }
    ```
 
 ### Corporate: "Find suppliers for this RFQ"
@@ -90,18 +91,23 @@ What the portal team needs to add discovery to the supplier and corporate portal
 
 ### The contact fields
 
-Every result, on both routes and both sides (buyers and suppliers), has these three fields. They are always present, so a result with none of them can say "no contact found".
+Every result, on both routes and both sides (buyers and suppliers), has these four fields. They are always present, so a result with none of them can say "no contact found".
 
 | Field | Type | Format | When there is none |
 |---|---|---|---|
 | `phones` | array of strings | International E.164: `+`, the country code and the number, no spaces or dashes (`+966501234567`). A mix of mobiles and landlines; the engine does not say which. | `[]` |
 | `emails` | array of strings | Lower-case (`info@seerah.com.sa`). | `[]` |
 | `website` | string or `null` | `https://` and the company's oldest known domain, with no `www.` and no path (`https://seerah.com.sa`). | `null` |
+| `socials` | object of arrays of strings | Keyed by network: `linkedin`, `instagram`, `x`, `facebook`, `tiktok`, `youtube`, `snapchat`, always in that order, with a key only for a network the company is on. Each value lists profile links: `https://`, no `www.`, lower-case except a YouTube channel id, which keeps its case (`https://linkedin.com/company/seerah`, `https://x.com/seerah`, `https://tiktok.com/@seerah`, `https://youtube.com/channel/UCa1B2c3`). | `{}` |
 
 - **Every value is listed**, in the order the engine learnt them, so the first is the longest known. A few companies have many (on staging, up to 13 phones and 17 emails), so show the first few and let the user expand.
 - **To format a phone for display**, use any libphonenumber port on the E.164 value (`+966 50 123 4567`). For a tap-to-call link use `tel:` and the value as it is; for WhatsApp, `https://wa.me/` and the value without the `+`.
 - **Opt-outs are not filtered out.** A phone or email whose owner opted out of the engine's messages is still listed. Opting out stops the engine sending; it does not hide the address.
 - **`website` is a domain the company is known by.** Usually it is the site the engine read. For a company imported or sent through the API it can also come from a company email address (`info@acme.com` gives `https://acme.com`), so it is not guaranteed to serve a page. A company known only by a shop builder or social network page (a Salla shop, an Instagram page) has no `website`.
+- **Social profiles are the ones the company's own pages link to**, plus a LinkedIn company page found by name when its pages link none. A LinkedIn link is always a company page, never a person's. No link is a post or a share button itself, but on networks other than LinkedIn a profile the site links to may belong to someone else (an owner's Instagram, say).
+- **LinkedIn comes first** because it matters most. Most companies have one profile per network and some have several (an Arabic and an English Instagram, say), so treat each as a list.
+- **Use the links exactly as given**, without changing their case.
+- **Older results may have `{}`.** A company found before the engine collected socials has none until a later search reads it again. A company read in the last 90 days is not read again.
 - **A company merged with another since the search ran** shows the merged company's contacts.
 
 ## Lists, history and the quota

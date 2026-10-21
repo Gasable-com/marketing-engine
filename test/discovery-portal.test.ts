@@ -137,6 +137,7 @@ describe('a supplier or corporate searching from the portal', () => {
       phones: ['+966501111111'],
       emails: ['sales@alfa-diesel.com.sa'],
       website: 'https://alfa-diesel.com.sa',
+      socials: {},
     });
     for (const leak of ['http://', 'gmaps', 'www.']) {
       expect(answer.text).not.toContain(leak);
@@ -305,7 +306,13 @@ async function buyersSearch(requesterRef: string, companyIds: string[]): Promise
   return job!.id;
 }
 
-type Contacts = { company: { id: string; name: string }; phones: string[]; emails: string[]; website: string | null };
+type Contacts = {
+  company: { id: string; name: string };
+  phones: string[];
+  emails: string[];
+  website: string | null;
+  socials: Record<string, string[]>;
+};
 
 async function results(searchId: string, requesterRef: string) {
   const answer = await v1<{ results: Contacts[] }>('GET', `/v1/discovery/searches/${searchId}/results?requesterRef=${requesterRef}`);
@@ -352,7 +359,7 @@ describe('contacts on search results (brief 27)', () => {
       expect.objectContaining({ company: { id: bare, name: 'Al Noor Compound' }, phones: [], emails: [], website: null }),
     ]);
     // Present even when empty, and still never a Maps id.
-    for (const r of answer.body.results) expect(Object.keys(r)).toEqual(expect.arrayContaining(['phones', 'emails', 'website']));
+    for (const r of answer.body.results) expect(Object.keys(r)).toEqual(expect.arrayContaining(['phones', 'emails', 'website', 'socials']));
     expect(answer.text).not.toContain('ChIJ');
   });
 
@@ -403,5 +410,56 @@ describe('contacts on search results (brief 27)', () => {
     expect((await results(id, 'sup-2')).body.results).toEqual([
       expect.objectContaining({ phones: ['+966501239999'], emails: ['events@palm-hotel.com.sa'], website: 'https://palm-hotel.com.sa' }),
     ]);
+  });
+});
+
+describe('socials on search results (brief 27c)', () => {
+  it('groups every profile by network, LinkedIn first, oldest first within one, and {} when none', async () => {
+    const social = await companyWith('Seerah Pools', [
+      { type: 'domain', value: 'seerah-pools.com.sa' },
+      { type: 'social', value: 'https://www.instagram.com/seerahpools/' },
+      { type: 'social', value: 'https://twitter.com/SeerahPools' },
+      { type: 'social', value: 'https://sa.linkedin.com/company/seerah-pools/about/?trk=x' },
+      { type: 'social', value: 'https://instagram.com/seerah.ar' },
+    ]);
+    const none = await companyWith('Al Noor Compound', [{ type: 'domain', value: 'alnoor-compound.sa' }]);
+    const id = await buyersSearch('sup-4411', [social, none]);
+
+    const answer = await results(id, 'sup-4411');
+    const [first, second] = answer.body.results;
+    expect(first!.socials).toEqual({
+      linkedin: ['https://linkedin.com/company/seerah-pools'],
+      instagram: ['https://instagram.com/seerahpools', 'https://instagram.com/seerah.ar'],
+      x: ['https://x.com/seerahpools'],
+    });
+    expect(Object.keys(first!.socials)[0]).toBe('linkedin');
+    // A social is not a website, a phone or an email.
+    expect(first).toMatchObject({ website: 'https://seerah-pools.com.sa', phones: [], emails: [] });
+    expect(second!.socials).toEqual({});
+  });
+
+  it('shows the survivor’s profiles for a company merged away since it was ranked, on every RFQ line too', async () => {
+    const older = await companyWith('Gulf Water', [
+      { type: 'domain', value: 'water-gulf.com' },
+      { type: 'social', value: 'https://www.linkedin.com/company/gulf-water' },
+    ]);
+    const newer = await companyWith('Khaleej Aqua', [
+      { type: 'domain', value: 'gulfwater.sa' },
+      { type: 'social', value: 'https://www.facebook.com/KhaleejAqua' },
+    ]);
+    const id = await buyersSearch('sup-1', [newer]);
+    await withTenant(TENANT_A, (tx) =>
+      upsert(tx, {
+        name: 'Gulf Water',
+        identifiers: [{ type: 'domain', value: 'water-gulf.com' }, { type: 'domain', value: 'gulfwater.sa' }],
+        source: { type: 'api', tenantId: TENANT_A },
+      }),
+    );
+    expect((await db()<{ merged_into: string }[]>`select merged_into from companies where id = ${newer}`)[0]!.merged_into).toBe(older);
+
+    expect((await results(id, 'sup-1')).body.results[0]!.socials).toEqual({
+      linkedin: ['https://linkedin.com/company/gulf-water'],
+      facebook: ['https://facebook.com/khaleejaqua'],
+    });
   });
 });
