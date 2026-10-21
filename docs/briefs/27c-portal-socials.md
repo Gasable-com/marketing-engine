@@ -18,7 +18,7 @@ A result in the portal view gains one field, beside `phones`, `emails` and `webs
 ```
 
 - **The shape is `groupSocials`'s, as on `GET /v1/companies/:id`.** An object keyed by network, in the order `linkedin`, `instagram`, `x`, `facebook`, `tiktok`, `youtube`, `snapchat`. It has keys only for the networks the company has a profile on.
-- **Each value is a list of links**, `https://` and the canonical form of brief 27b (no `www.`, lower-case), in the order recorded.
+- **Each value is a list of links**, `https://` and the canonical form of brief 27b (no `www.`, lower-case but for a YouTube channel id), in the order recorded.
 - **`{}` when none is held.** The field is always present.
 - **Merges** follow the survivor, as for the contacts: `companyContacts` reads `social` rows too.
 - A company read before brief 27b has `{}` until its site is read again (no backfill; brief 27b).

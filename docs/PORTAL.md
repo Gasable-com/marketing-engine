@@ -98,13 +98,16 @@ Every result, on both routes and both sides (buyers and suppliers), has these fo
 | `phones` | array of strings | International E.164: `+`, the country code and the number, no spaces or dashes (`+966501234567`). A mix of mobiles and landlines; the engine does not say which. | `[]` |
 | `emails` | array of strings | Lower-case (`info@seerah.com.sa`). | `[]` |
 | `website` | string or `null` | `https://` and the company's oldest known domain, with no `www.` and no path (`https://seerah.com.sa`). | `null` |
-| `socials` | object of arrays of strings | Keyed by network: `linkedin`, `instagram`, `x`, `facebook`, `tiktok`, `youtube`, `snapchat`, always in that order, with a key only for a network the company is on. Each value lists profile links: `https://`, no `www.`, lower-case (`https://linkedin.com/company/seerah`, `https://x.com/seerah`, `https://tiktok.com/@seerah`). | `{}` |
+| `socials` | object of arrays of strings | Keyed by network: `linkedin`, `instagram`, `x`, `facebook`, `tiktok`, `youtube`, `snapchat`, always in that order, with a key only for a network the company is on. Each value lists profile links: `https://`, no `www.`, lower-case except a YouTube channel id, which keeps its case (`https://linkedin.com/company/seerah`, `https://x.com/seerah`, `https://tiktok.com/@seerah`, `https://youtube.com/channel/UCa1B2c3`). | `{}` |
 
 - **Every value is listed**, in the order the engine learnt them, so the first is the longest known. A few companies have many (on staging, up to 13 phones and 17 emails), so show the first few and let the user expand.
 - **To format a phone for display**, use any libphonenumber port on the E.164 value (`+966 50 123 4567`). For a tap-to-call link use `tel:` and the value as it is; for WhatsApp, `https://wa.me/` and the value without the `+`.
 - **Opt-outs are not filtered out.** A phone or email whose owner opted out of the engine's messages is still listed. Opting out stops the engine sending; it does not hide the address.
 - **`website` is a domain the company is known by.** Usually it is the site the engine read. For a company imported or sent through the API it can also come from a company email address (`info@acme.com` gives `https://acme.com`), so it is not guaranteed to serve a page. A company known only by a shop builder or social network page (a Salla shop, an Instagram page) has no `website`.
-- **Social profiles are company pages only.** Never a person's LinkedIn, a post or a share link. LinkedIn comes first because it matters most. Most companies have one profile per network; a few have up to three (an Arabic and an English Instagram, say). The links open as they are. Companies found before 2026-10-21 have `{}` until a later search reads their site again.
+- **Social profiles are the ones the company's own pages link to**, plus a LinkedIn company page found by name when its pages link none. A LinkedIn link is always a company page, never a person's. No link is a post or a share button itself, but on networks other than LinkedIn a profile the site links to may belong to someone else (an owner's Instagram, say).
+- **LinkedIn comes first** because it matters most. Most companies have one profile per network and some have several (an Arabic and an English Instagram, say), so treat each as a list.
+- **Use the links exactly as given**, without changing their case.
+- **Older results may have `{}`.** A company found before the engine collected socials has none until a later search reads it again. A company read in the last 90 days is not read again.
 - **A company merged with another since the search ran** shows the merged company's contacts.
 
 ## Lists, history and the quota
