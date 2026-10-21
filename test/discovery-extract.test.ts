@@ -6,6 +6,7 @@ import { setFirecrawlFetch, setResolver, setTransport } from '../src/modules/dis
 import { setProfile } from '../src/modules/discovery/index.js';
 import { fakeLookup, resetFakeLookup, seedFakeLookup, setCompanyLookup, upsert } from '../src/spine/registry/index.js';
 import { checkExtraction } from '../src/modules/discovery/extract/check.js';
+import { namesCompany, searchName } from '../src/modules/discovery/extract/linkedin.js';
 import { FakeBridge, FakeSerper, clearProviders, drive, ok, setProviders, terms, type BridgeAnswer } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
@@ -639,7 +640,7 @@ describe('social profiles', () => {
     // The first hit is Alfa Diesel Services: another company, passed over.
     expect(await socialsOf(alfa!.id)).toEqual(['linkedin.com/company/alfa-diesel-supply']);
     expect((await sourceOf(alfa!.id))['linkedinLookup']).toEqual({
-      q: '"Alfa Diesel Supply" site:linkedin.com/company',
+      q: 'Alfa Diesel Supply site:linkedin.com/company',
       url: 'https://sa.linkedin.com/company/alfa-diesel-supply?trk=public_profile',
       title: 'Alfa Diesel Supply Company | LinkedIn',
     });
@@ -650,13 +651,13 @@ describe('social profiles', () => {
     // One per saved company, the Maps-only one by its listing name; none for what was not saved.
     const lookups = serper.calls.filter(isLookup);
     expect(lookups).toHaveLength(5);
-    expect(lookups).toContainEqual({ path: '/search', q: '"Riyadh Diesel Station" site:linkedin.com/company', gl: 'sa', hl: 'en' });
+    expect(lookups).toContainEqual({ path: '/search', q: 'Riyadh Diesel Station site:linkedin.com/company', gl: 'sa', hl: 'en' });
     expect(detail.tasks[0]!.counts).toMatchObject({ linkedin_lookups: 5, linkedin_found: 1, socials: 1, linkedin_pages: 0 });
     expect(detail.tasks[0]!.counts['linkedin_lookup_failed']).toBeUndefined();
 
     const events = await lookupEvents(jobId);
     expect(events).toHaveLength(5);
-    expect(events.find((e) => e.payload['q'] === '"Alfa Diesel Supply" site:linkedin.com/company')!.payload).toMatchObject({
+    expect(events.find((e) => e.payload['q'] === 'Alfa Diesel Supply site:linkedin.com/company')!.payload).toMatchObject({
       personaId: null, provider: 'serper', kind: 'web', gl: 'sa', hl: 'en', page: 1, cached: false, credits: 1, hits: 2,
     });
     // On the spend log beside the search's own queries, told apart by `lookup`.
@@ -778,5 +779,29 @@ describe('checking quotes', () => {
         sources: [listing], personas: [persona], listingTitle: 'Falah Ready Mix', listingUrl: listing.url,
       }),
     ).toMatchObject({ saved: false });
+  });
+});
+
+describe('the LinkedIn lookup', () => {
+  it('asks for the name without its branch, its aside, its legal form or its punctuation', () => {
+    expect(searchName('BRC COMPRESSORS - UNIVERSE WAY CO. Riyadh Branch')).toBe('BRC COMPRESSORS UNIVERSE WAY');
+    expect(searchName('Al Tadbir Trading Est.')).toBe('Al Tadbir');
+    expect(searchName('Diyar Al-ezz Compny')).toBe('Diyar Al ezz Compny');
+    expect(searchName('QARAH ADVANCED TOOLS CO. (QATCO)')).toBe('QARAH ADVANCED TOOLS');
+    expect(searchName('شركة شهاب الصناعية التجارية (لحام,ضواغط هواء)')).toBe('شهاب الصناعية');
+    expect(searchName('مؤسسة الفلاح للتجارة - فرع الرياض')).toBe('الفلاح');
+    // Nothing left but legal words: asked as saved.
+    expect(searchName('Trading Co.')).toBe('Trading Co.');
+  });
+
+  it('takes a page named for the company with or without its branch, and never another company', () => {
+    const hit = (title: string, link: string) => ({ title, link, snippet: '', position: 1 });
+    const name = 'BRC COMPRESSORS - UNIVERSE WAY CO. Riyadh Branch';
+    expect(namesCompany(hit('BRC Compressors Universe Way | LinkedIn', 'https://sa.linkedin.com/company/brc-sa'), name)).toBe(true);
+    expect(namesCompany(hit('Riyadh Compressors | LinkedIn', 'https://sa.linkedin.com/company/brc-compressors-universe-way'), name)).toBe(true);
+    expect(namesCompany(hit('BRC Compressors | LinkedIn', 'https://sa.linkedin.com/company/brc'), name)).toBe(false);
+    expect(namesCompany(hit('Universe Way | LinkedIn', 'https://sa.linkedin.com/company/universe-way'), name)).toBe(false);
+    // A person with the company's name is not its page.
+    expect(namesCompany(hit('BRC Compressors Universe Way | LinkedIn', 'https://sa.linkedin.com/in/brc'), name)).toBe(false);
   });
 });

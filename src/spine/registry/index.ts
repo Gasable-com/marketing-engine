@@ -14,7 +14,7 @@ import { groupSocials, type Socials } from "./socials.js";
 export * from "./identifiers.js";
 export * from "./lookup/index.js";
 export * from "./socials.js";
-export { foldText, normalizeName } from "./names.js";
+export { foldText, isNoiseWord, normalizeName } from "./names.js";
 
 /**
  * How alike two normalised names must be before the registry links them.

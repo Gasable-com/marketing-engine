@@ -1453,12 +1453,14 @@ kept candidates in triage order, up to `DISCOVERY_MAX_READS` per task (default
   page's, stored as weak `social` identifiers and listed as `socials` on the
   source; share buttons are not profiles;
 - when the pages linked no LinkedIn, Serper is configured and the matched pool
-  company holds none, one web query `"<saved name>" site:linkedin.com/company`
-  (the country's `gl`, `hl: en`, answered from the cache when it can be) looks
+  company holds none, one web query `<name> site:linkedin.com/company`
+  (unquoted, the name without a bracketed aside, a trailing branch such as
+  `Riyadh Branch` or `فرع الرياض`, punctuation and legal-form or trade words;
+  the country's `gl`, `hl: en`, answered from the cache when it can be) looks
   for one, a Maps-only company by its listing name. The first hit whose link is
   a `linkedin.com/company/<slug>` page and whose title (less a trailing
-  `| LinkedIn` or `- LinkedIn`) or slug (hyphens as spaces) is the saved name
-  is taken, and recorded on the source as `linkedinLookup: { q, url, title }`;
+  `| LinkedIn` or `- LinkedIn`) or slug (hyphens as spaces) is the saved name,
+  with or without its aside and branch, is taken, and recorded on the source as `linkedinLookup: { q, url, title }`;
   no such hit is a miss. It is on the queries log with `lookup: linkedin`. A
   failed call saves the company without; a refused key stops the lookups for
   the rest of the task, which carries on. A lookup never fails a candidate.
