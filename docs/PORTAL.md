@@ -96,12 +96,12 @@ Every result, on both routes and both sides (buyers and suppliers), has these th
 |---|---|---|---|
 | `phones` | array of strings | International E.164: `+`, the country code and the number, no spaces or dashes (`+966501234567`). A mix of mobiles and landlines; the engine does not say which. | `[]` |
 | `emails` | array of strings | Lower-case (`info@seerah.com.sa`). | `[]` |
-| `website` | string or `null` | `https://` and the company's domain, with no `www.` and no path (`https://seerah.com.sa`). | `null` |
+| `website` | string or `null` | `https://` and the company's oldest known domain, with no `www.` and no path (`https://seerah.com.sa`). | `null` |
 
 - **Every value is listed**, in the order the engine learnt them, so the first is the longest known. A few companies have many (on staging, up to 13 phones and 17 emails), so show the first few and let the user expand.
 - **To format a phone for display**, use any libphonenumber port on the E.164 value (`+966 50 123 4567`). For a tap-to-call link use `tel:` and the value as it is; for WhatsApp, `https://wa.me/` and the value without the `+`.
 - **Opt-outs are not filtered out.** A phone or email whose owner opted out of the engine's messages is still listed. Opting out stops the engine sending; it does not hide the address.
-- **A company on a shop builder or social network only** (a Salla shop, an Instagram page) has no `website`.
+- **`website` is a domain the company is known by.** Usually it is the site the engine read. For a company imported or sent through the API it can also come from a company email address (`info@acme.com` gives `https://acme.com`), so it is not guaranteed to serve a page. A company known only by a shop builder or social network page (a Salla shop, an Instagram page) has no `website`.
 - **A company merged with another since the search ran** shows the merged company's contacts.
 
 ## Lists, history and the quota
