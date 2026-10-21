@@ -8,6 +8,11 @@ RUN npm ci
 
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
+
+# Where the app will be mounted, e.g. /marketing/. Baked in at build time
+# because the asset URLs in index.html are written then.
+ARG BASE_PATH=/
+ENV BASE_PATH=${BASE_PATH}
 RUN npm run build
 
 FROM nginx:alpine AS runtime
@@ -25,6 +30,6 @@ RUN rm -f /etc/nginx/conf.d/default.conf
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -q --spider http://127.0.0.1:8080/index.html || exit 1
+  CMD wget -q --spider http://127.0.0.1:8080/healthz || exit 1
 
 ENTRYPOINT ["/docker-entrypoint-dashboard.sh"]
