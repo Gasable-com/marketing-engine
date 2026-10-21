@@ -1459,8 +1459,16 @@ kept candidates in triage order, up to `DISCOVERY_MAX_READS` per task (default
   the country's `gl`, `hl: en`, answered from the cache when it can be) looks
   for one, a Maps-only company by its listing name. The first hit whose link is
   a `linkedin.com/company/<slug>` page and whose title (less a trailing
-  `| LinkedIn` or `- LinkedIn`) or slug (hyphens as spaces) is the saved name,
-  with or without its aside and branch, is taken, and recorded on the source as `linkedinLookup: { q, url, title }`;
+  `| LinkedIn` or `- LinkedIn`, each side of a bilingual `A | B` title on its
+  own) or slug (hyphens as spaces) is the saved name, with or without its aside
+  and branch, and whose page is placed in the country, is taken: some listing of
+  the same page has, in its title or snippet, the company's own domain as a host
+  name, a country name of more than one word (`Saudi Arabia`), or a location as
+  LinkedIn writes one, two places either side of a comma (`Dammam, Saudi
+  Arabia`, `Riyadh, Riyadh`), the places being the names and cities of the
+  country's `discovery.country` row. A lone word (`saudi`, `المملكة`) or the
+  LinkedIn host (`sa.linkedin.com`, which serves every company's page) places
+  nothing, and nor does a place word in the company's own name, and recorded on the source as `linkedinLookup: { q, url, title }`;
   no such hit is a miss. It is on the queries log with `lookup: linkedin`. A
   failed call saves the company without; a refused key stops the lookups for
   the rest of the task, which carries on. A lookup never fails a candidate.

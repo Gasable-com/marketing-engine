@@ -6,7 +6,7 @@ import { setFirecrawlFetch, setResolver, setTransport } from '../src/modules/dis
 import { setProfile } from '../src/modules/discovery/index.js';
 import { fakeLookup, resetFakeLookup, seedFakeLookup, setCompanyLookup, upsert } from '../src/spine/registry/index.js';
 import { checkExtraction } from '../src/modules/discovery/extract/check.js';
-import { namesCompany, searchName } from '../src/modules/discovery/extract/linkedin.js';
+import { namesCompany, pickLinkedin, searchName } from '../src/modules/discovery/extract/linkedin.js';
 import { FakeBridge, FakeSerper, clearProviders, drive, ok, setProviders, terms, type BridgeAnswer } from './fake-bridge.js';
 import { TENANT_A, TENANT_B, resetDb, startQueue, teardownDb } from './helpers.js';
 
@@ -790,6 +790,11 @@ describe('the LinkedIn lookup', () => {
     expect(searchName('QARAH ADVANCED TOOLS CO. (QATCO)')).toBe('QARAH ADVANCED TOOLS');
     expect(searchName('شركة شهاب الصناعية التجارية (لحام,ضواغط هواء)')).toBe('شهاب الصناعية');
     expect(searchName('مؤسسة الفلاح للتجارة - فرع الرياض')).toBe('الفلاح');
+    expect(searchName('مطعم البيك - الفرع الرئيسي')).toBe('مطعم البيك');
+    expect(searchName('Jarir Bookstore - Olaya Branch')).toBe('Jarir Bookstore');
+    // Only a whole word is a branch.
+    expect(searchName('Acme Databranch')).toBe('Acme Databranch');
+    expect(searchName('مؤسسة التفرع الأخضر')).toBe('التفرع الأخضر');
     // Nothing left but legal words: asked as saved.
     expect(searchName('Trading Co.')).toBe('Trading Co.');
   });
@@ -803,5 +808,72 @@ describe('the LinkedIn lookup', () => {
     expect(namesCompany(hit('Universe Way | LinkedIn', 'https://sa.linkedin.com/company/universe-way'), name)).toBe(false);
     // A person with the company's name is not its page.
     expect(namesCompany(hit('BRC Compressors Universe Way | LinkedIn', 'https://sa.linkedin.com/in/brc'), name)).toBe(false);
+  });
+
+  // What Serper answered on staging on 2026-10-21, trimmed, and the SA row's words.
+  const hit = (title: string, link: string, snippet = '') => ({ title, link, snippet, position: 1 });
+  const saudi = {
+    gl: 'sa',
+    countryNames: ['saudi', 'saudi arabia', 'ksa', 'kingdom of saudi arabia', 'السعودية', 'المملكة العربية السعودية', 'المملكة'],
+    cities: ['Riyadh', 'riyad', 'الرياض', 'Jeddah', 'جدة', 'Dammam', 'الدمام', 'Mecca', 'Makkah', 'مكة', 'Medina', 'المدينة المنورة', 'Khobar', 'الخبر'],
+    domain: null,
+  };
+  const page = (title: string, slug: string, snippet: string, sub = 'www') => hit(title, `https://${sub}.linkedin.com/company/${slug}`, snippet);
+
+  it('reads a bilingual title as two names, split at a bar or a spaced dash', () => {
+    const name = 'شركة الإبتكارات المتحدة';
+    expect(namesCompany(hit('United Innovations Trading Co | شركة الإبتكارات المتحدة ...', 'https://www.linkedin.com/company/x'), 'United Innovations Trading Company')).toBe(true);
+    expect(namesCompany(hit('United Innovations Trading Co - شركة الإبتكارات المتحدة | LinkedIn', 'https://www.linkedin.com/company/x'), name)).toBe(true);
+    expect(namesCompany(hit('United Innovations Trading Co|شركة الإبتكارات المتحدة - LinkedIn', 'https://www.linkedin.com/company/x'), name)).toBe(true);
+    // A hyphen inside a name is part of it.
+    expect(namesCompany(hit('Al-Rashid Trading | LinkedIn', 'https://www.linkedin.com/company/x'), 'Rashid')).toBe(false);
+  });
+
+  it('takes a namesake only when a listing of its page places it in the country', () => {
+    const tampa = page('United Innovations Inc', 'united-innovations-inc',
+      'United Innovations Inc is an electrical/electronic manufacturing company based out of PO Box 166, Tampa, Florida, United States.');
+    const itools = page('United Innovations Trading Co | شركة الإبتكارات المتحدة ...', 'united-innovations-trading-co',
+      'Primary supplier for many construction companies in Saudi Arabia , adding extra value to our customers.');
+    // The Tampa company folds to the same name and comes first: passed over for the one in Saudi Arabia.
+    expect(namesCompany(tampa, 'United Innovations Trading Company')).toBe(true);
+    expect(pickLinkedin([tampa, itools], 'United Innovations Trading Company', saudi)).toBe(itools);
+    expect(pickLinkedin([tampa], 'United Innovations Trading Company', saudi)).toBeNull();
+
+    const atlas = page('Atlas Middle East Trading Est', 'atlas-me',
+      'Atlas Middle East Trading Est. is a premier industrial air solutions provider based in Dammam, Saudi Arabia.');
+    expect(pickLinkedin([atlas], 'Atlas Middle East Trading Est', saudi)).toBe(atlas);
+    // A location as LinkedIn writes one, in either script, and an Arabic country name with "in" joined to it.
+    expect(pickLinkedin([page('Acme Pumps', 'acme', 'Industrial Machinery · Riyadh, Riyadh · 51-200 employees')], 'Acme Pumps', saudi)).not.toBeNull();
+    expect(pickLinkedin([page('Acme Pumps', 'acme', 'المقر الرئيسي: جدة، مكة')], 'Acme Pumps', saudi)).not.toBeNull();
+    expect(pickLinkedin([page('Acme Pumps', 'acme', 'نعمل بالمملكة العربية السعودية منذ 1990')], 'Acme Pumps', saudi)).not.toBeNull();
+    // A place in another company's snippet places nobody else.
+    const copco = page('Atlas Copco', 'atlas-copco', 'Compressors sold across Saudi Arabia.');
+    expect(pickLinkedin([copco, page('Atlas Middle East Trading Est', 'atlas-me', '')], 'Atlas Middle East Trading Est', saudi)).toBeNull();
+  });
+
+  it('is placed by the company’s own domain as a host, on any listing of the page', () => {
+    // The www and sa listings carry no place; the bo listing names the domain.
+    const gulf = page('Gulf Riyadah Co. Ltd.', 'gulf-riyadah-co.-ltd.', 'Complete EPC (Engineering, Procurement ...');
+    const gulfSa = page('Gulf Riyadah Co. Ltd.', 'gulf-riyadah-co.-ltd.', 'Complete EPC (Engineering, Procurement ...', 'sa');
+    const gulfBo = page('Gulf Riyadah Co. Ltd.', 'gulf-riyadah-co.-ltd.', 'Sitio web: http://www.gulfriyadah.com/.', 'bo');
+    expect(pickLinkedin([gulf, gulfSa, gulfBo], 'Gulf Riyadah Company Ltd.', { ...saudi, domain: 'gulfriyadah.com' })).toBe(gulf);
+    expect(pickLinkedin([gulf, gulfSa, gulfBo], 'Gulf Riyadah Company Ltd.', saudi)).toBeNull();
+    // A longer domain that starts with it, or a folded TLD that reads as a word, is someone else's.
+    expect(pickLinkedin([page('Al Noor | LinkedIn', 'al-noor-eg', 'Website: http://www.alnoor.com.eg')], 'Al Noor Est.', { ...saudi, domain: 'alnoor.com' })).toBeNull();
+    expect(pickLinkedin([page('Nova Co | LinkedIn', 'nova-co', 'Nova Co is a Denver-based design firm.')], 'Nova Trading Est.', { ...saudi, domain: 'nova.co' })).toBeNull();
+  });
+
+  it('is never placed by a lone word, the LinkedIn host or the company’s own name', () => {
+    const noor = 'Al Noor Trading Est.';
+    const placedBy = (snippet: string, sub = 'www') => pickLinkedin([page('Al Noor Trading', 'al-noor', snippet, sub)], noor, saudi);
+    expect(placedBy('شركة النور للتجارة في المملكة الأردنية الهاشمية - عمّان')).toBeNull();
+    expect(placedBy('Cairo, Egypt. Our clients include Saudi Aramco and SABIC.')).toBeNull();
+    expect(placedBy('A mecca for Middle Eastern groceries in Chicago.')).toBeNull();
+    expect(placedBy('Al Noor LLC · Medina, Ohio, United States')).toBeNull();
+    expect(placedBy('Founded by Riyad Haddad in Beirut, Lebanon.')).toBeNull();
+    expect(placedBy('نصنع الخبر في القاهرة')).toBeNull();
+    expect(placedBy('Al Noor | Cairo, Egypt', 'sa')).toBeNull();
+    // Medina in the name places every namesake called Medina Trading.
+    expect(pickLinkedin([page('Medina Trading', 'medina-trading', 'Medina Trading · Medina, Ohio')], 'Medina Trading', saudi)).toBeNull();
   });
 });

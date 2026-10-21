@@ -30,6 +30,16 @@ const FACEBOOK_NOT = new Set([
 /** Facebook's own sites, not a locale of the main one: docs, link redirects, its company pages. */
 const FACEBOOK_SITES = /^(developers|l|lm|about|transparency|graph)\.facebook\.com$/;
 
+/**
+ * Second path segments that make a link one post, not the profile: an
+ * embedded tweet or a linked post is often another account's, and reducing it
+ * to its author would give the company that account.
+ */
+const POST = new Set([
+  'status', 'statuses', 'p', 'reel', 'reels', 'tv', 'posts', 'photos', 'photo', 'videos', 'video', 'permalink.php',
+  'story.php', 'activity',
+]);
+
 /** A page or company name as the networks allow it, in any script. */
 const NAME = /^[\p{L}\p{M}\p{N}._-]+$/u;
 
@@ -44,6 +54,7 @@ export function canonicalSocial(url: string): SocialProfile | null {
   if (!link) return null;
   const { host, segments, params } = link;
   const first = segments[0]?.toLowerCase() ?? '';
+  const post = POST.has(segments[1]?.toLowerCase() ?? '');
 
   // Locale and country subdomains (`sa.`, `ar-ar.`, `web.`) are the same site.
   if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
@@ -59,12 +70,12 @@ export function canonicalSocial(url: string): SocialProfile | null {
   if (onSite(host, 'instagram.com')) {
     // `/_u/acme` is a link that opens the app on acme's profile.
     const handle = first === '_u' ? (segments[1]?.toLowerCase() ?? '') : first;
-    if (INSTAGRAM_NOT.has(handle) || !/^[a-z0-9._]{1,30}$/.test(handle)) return null;
+    if (post || INSTAGRAM_NOT.has(handle) || !/^[a-z0-9._]{1,30}$/.test(handle)) return null;
     return { network: 'instagram', value: `instagram.com/${handle}` };
   }
 
   if (onSite(host, 'x.com') || onSite(host, 'twitter.com')) {
-    if (X_NOT.has(first) || !/^[a-z0-9_]{1,15}$/.test(first)) return null;
+    if (post || X_NOT.has(first) || !/^[a-z0-9_]{1,15}$/.test(first)) return null;
     return { network: 'x', value: `x.com/${first}` };
   }
 
@@ -76,7 +87,7 @@ export function canonicalSocial(url: string): SocialProfile | null {
       return /^\d+$/.test(id) ? { network: 'facebook', value: `facebook.com/profile.php?id=${id}` } : null;
     }
     // Any other script (`sharer.php`, `share.php`, `home.php`) is a feature.
-    if (first.endsWith('.php') || FACEBOOK_NOT.has(first) || !NAME.test(first)) return null;
+    if (post || first.endsWith('.php') || FACEBOOK_NOT.has(first) || !NAME.test(first)) return null;
     return { network: 'facebook', value: `facebook.com/${first}` };
   }
 

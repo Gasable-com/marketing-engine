@@ -49,8 +49,8 @@ type CandidateRow = {
   company_id: string | null;
 };
 
-/** The task's LinkedIn lookups: the country's `gl` once, and whether they stopped. */
-type Lookups = { stopped: boolean; gl: string | null };
+/** The task's LinkedIn lookups: the country's code, names and cities once, and whether they stopped. */
+type Lookups = { stopped: boolean; country: { gl: string; countryNames: string[]; cities: string[] } | null };
 
 /** Add to the task's counts as it goes, so a deferral loses nothing. */
 async function bump(task: TaskRow, add: Counts): Promise<void> {
@@ -110,7 +110,7 @@ export async function runReadExtract(job: JobRow, task: TaskRow): Promise<Counts
     `,
   ]);
   let processed = done[0]?.n ?? 0;
-  const lookups: Lookups = { stopped: !serperConfigured(), gl: null };
+  const lookups: Lookups = { stopped: !serperConfigured(), country: null };
 
   // Fresh ones first: profiled from the web lately, before this job began.
   // They are ranked from what is stored, and never count against the caps.
@@ -272,7 +272,7 @@ async function readAndExtract(
   // is weak: one the web agency's footer gives two companies merges nothing.
   const socials = siteRead ? socialsIn(links) : [];
   const linkedinOnPages = socials.some((s) => s.startsWith('linkedin.com/'));
-  const linkedin = linkedinOnPages ? null : await findLinkedin(task, c.company_id, result.name.value, lookups);
+  const linkedin = linkedinOnPages ? null : await findLinkedin(task, c.company_id, result.name.value, siteRead ? c.domain : null, lookups);
   identifiers.push(
     ...socials.map((value) => ({ type: 'social', value })),
     ...(linkedin ? [{ type: 'social', value: linkedin.value }] : []),
@@ -353,14 +353,18 @@ async function findLinkedin(
   task: TaskRow,
   companyId: string | null,
   name: string,
+  domain: string | null,
   lookups: Lookups,
 ): Promise<LinkedinFound | null> {
   if (lookups.stopped) return null;
   if (companyId && (await withTenant(task.tenant_id, (tx) => socialsOf(tx, companyId))).linkedin) return null;
-  lookups.gl ??= (await countrySettings(task.tenant_id, task.country)).gl;
+  if (!lookups.country) {
+    const settings = await countrySettings(task.tenant_id, task.country);
+    lookups.country = { gl: settings.gl, countryNames: settings.names, cities: settings.cities.flatMap((c) => Object.values(c)) };
+  }
   await bump(task, { linkedin_lookups: 1 });
   try {
-    const found = await lookupLinkedin(task, name, lookups.gl);
+    const found = await lookupLinkedin(task, name, { ...lookups.country, domain });
     if (found) await bump(task, { linkedin_found: 1 });
     return found;
   } catch (err) {
