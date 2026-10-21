@@ -917,90 +917,115 @@ function Results({ jobId, country, version }: { jobId: string; country: string; 
         </>
       ) : null}
 
-      {rows.length > 0 ? (
-        <table>
-          <thead>
-            <tr>
-              <th class="num">rank</th>
-              <th>company</th>
-              <th>country</th>
-              <th class="num">score</th>
-              <th>persona</th>
-              <th>why</th>
-              <th>profile</th>
-              <th>identifiers</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td class="num">{r.rank}</td>
-                <td>
-                  {r.company.name}
-                  <div class="mono muted">{r.company.id}</div>
-                </td>
-                <td class="mono">{r.country}</td>
-                <td class="num">{r.score.toFixed(2)}</td>
-                <td>
-                  {r.persona ? r.persona.name : <span class="muted">—</span>}
-                  {r.fit ? <div class="muted">{r.fit} fit</div> : null}
-                  <div class="muted">{r.tier === 'found' ? 'found by this search' : 'already in the pool'}</div>
-                </td>
-                <td>
-                  {r.evidence?.length ? (
-                    <ul class="reasons">
-                      {r.evidence.map((e) => (
-                        <li key={e.quote}>
-                          {e.claim}: “{e.quote}”{' '}
-                          {/^https?:\/\//.test(e.url) ? (
-                            <a href={e.url} target="_blank" rel="noopener noreferrer">
-                              page
-                            </a>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <ul class="reasons">
-                      {r.reasons.map((reason) => (
-                        <li key={reason}>{reason}</li>
-                      ))}
-                    </ul>
-                  )}
-                </td>
-                <td>
-                  {r.profile ? (
-                    <>
-                      {r.profile.products.length ? <div>{r.profile.products.join(' · ')}</div> : null}
-                      {r.profile.roles.length ? <div class="muted">{r.profile.roles.join(', ')}</div> : null}
-                      {r.profile.cities.length ? <div class="muted">{r.profile.cities.join(', ')}</div> : null}
-                      {r.profile.quality ? <Badge value={r.profile.quality} /> : null}
-                    </>
-                  ) : (
-                    <span class="muted">—</span>
-                  )}
-                </td>
-                <td>
-                  {r.identifiers.length ? (
-                    r.identifiers.map((i) => (
-                      <div key={`${i.type}:${i.value}`} class="mono wrap-any">
-                        <span class="muted">{i.type}</span> {i.value}
-                      </div>
-                    ))
-                  ) : (
-                    <span class="muted">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
+      {rows.length > 0 ? <ResultTable rows={rows} /> : null}
 
       <Pager
         cursor={page.state.status === 'ok' ? page.state.data.nextCursor : null}
         onMore={() => setCursor(page.state.status === 'ok' ? (page.state.data.nextCursor ?? undefined) : undefined)}
       />
+    </>
+  );
+}
+
+export function ResultTable({ rows }: { rows: DiscoveryResult[] }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th class="num">rank</th>
+          <th>company</th>
+          <th>country</th>
+          <th class="num">score</th>
+          <th>persona</th>
+          <th>why</th>
+          <th>profile</th>
+          <th>identifiers</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.id}>
+            <td class="num">{r.rank}</td>
+            <td>
+              {r.company.name}
+              <div class="mono muted">{r.company.id}</div>
+            </td>
+            <td class="mono">{r.country}</td>
+            <td class="num">{r.score.toFixed(2)}</td>
+            <td>
+              {r.persona ? r.persona.name : <span class="muted">—</span>}
+              {r.fit ? <div class="muted">{r.fit} fit</div> : null}
+              <div class="muted">{r.tier === 'found' ? 'found by this search' : 'already in the pool'}</div>
+            </td>
+            <td>
+              {r.evidence?.length ? (
+                <ul class="reasons">
+                  {r.evidence.map((e) => (
+                    <li key={e.quote}>
+                      {e.claim}: “{e.quote}”{' '}
+                      {/^https?:\/\//.test(e.url) ? (
+                        <a href={e.url} target="_blank" rel="noopener noreferrer">
+                          page
+                        </a>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <ul class="reasons">
+                  {r.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+            </td>
+            <td>
+              {r.profile ? (
+                <>
+                  {r.profile.products.length ? <div>{r.profile.products.join(' · ')}</div> : null}
+                  {r.profile.roles.length ? <div class="muted">{r.profile.roles.join(', ')}</div> : null}
+                  {r.profile.cities.length ? <div class="muted">{r.profile.cities.join(', ')}</div> : null}
+                  {r.profile.quality ? <Badge value={r.profile.quality} /> : null}
+                </>
+              ) : (
+                <span class="muted">—</span>
+              )}
+            </td>
+            <td>
+              <Identifiers result={r} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * A result's identifiers: its social profiles as links, in the engine's
+ * order (LinkedIn first), then every other identifier as it is stored.
+ */
+function Identifiers({ result }: { result: DiscoveryResult }) {
+  const socials = Object.entries(result.socials ?? {});
+  const others = result.identifiers.filter((i) => i.type !== 'social');
+  if (socials.length === 0 && others.length === 0) return <span class="muted">—</span>;
+  return (
+    <>
+      {socials.map(([network, urls]) =>
+        urls.map((url) => (
+          <div key={url} class="mono wrap-any">
+            <span class="muted">{network}</span>{' '}
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              {url}
+            </a>
+          </div>
+        )),
+      )}
+      {others.map((i) => (
+        <div key={`${i.type}:${i.value}`} class="mono wrap-any">
+          <span class="muted">{i.type}</span> {i.value}
+        </div>
+      ))}
     </>
   );
 }
@@ -1073,47 +1098,54 @@ function Queries({ jobId, country, version }: { jobId: string; country: string; 
       {answer.state.status === 'loading' && rows.length === 0 ? <Loading what="queries" /> : null}
       {answer.state.status === 'error' ? <Failed error={answer.state.error} what="queries" /> : null}
       {answer.state.status === 'ok' && rows.length === 0 ? <Empty what="queries yet" /> : null}
-      {rows.length > 0 ? (
-        <table>
-          <thead>
-            <tr>
-              <th>when</th>
-              <th>country</th>
-              <th>on</th>
-              <th>query</th>
-              <th>persona</th>
-              <th>answered by</th>
-              <th class="num">hits</th>
-              <th class="num">credits</th>
-              <th class="num">cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((q) => (
-              <tr key={q.id}>
-                <td>
-                  <Time iso={q.at} relative />
-                </td>
-                <td class="mono">{q.country}</td>
-                <td>{q.kind === 'places' ? 'Maps' : 'web'}</td>
-                <td>
-                  {q.q}
-                  <div class="mono muted">
-                    {q.hl} · {q.gl}
-                  </div>
-                </td>
-                <td>{q.persona ?? <span class="muted">—</span>}</td>
-                <td>{q.cached ? <span class="muted">cache</span> : 'Serper'}</td>
-                <td class="num">{count(q.hits)}</td>
-                <td class="num">{q.credits === 0 ? <span class="zero">0</span> : count(q.credits)}</td>
-                <td class="num">{usd(q.usd)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
+      {rows.length > 0 ? <QueryTable rows={rows} /> : null}
       <Pager cursor={next} onMore={() => setCursor(next ?? undefined)} />
     </>
+  );
+}
+
+export function QueryTable({ rows }: { rows: DiscoveryQuery[] }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>when</th>
+          <th>country</th>
+          <th>on</th>
+          <th>query</th>
+          <th>persona</th>
+          <th>answered by</th>
+          <th class="num">hits</th>
+          <th class="num">credits</th>
+          <th class="num">cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((q) => (
+          <tr key={q.id}>
+            <td>
+              <Time iso={q.at} relative />
+            </td>
+            <td class="mono">{q.country}</td>
+            <td>{q.kind === 'places' ? 'Maps' : 'web'}</td>
+            <td>
+              {q.q}
+              <div class="mono muted">
+                {q.hl} · {q.gl}
+              </div>
+            </td>
+            <td>
+              {/* A lookup asks about one company, so it has no persona. */}
+              {q.persona ?? (q.lookup ? `${q.lookup} lookup` : <span class="muted">—</span>)}
+            </td>
+            <td>{q.cached ? <span class="muted">cache</span> : 'Serper'}</td>
+            <td class="num">{count(q.hits)}</td>
+            <td class="num">{q.credits === 0 ? <span class="zero">0</span> : count(q.credits)}</td>
+            <td class="num">{usd(q.usd)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

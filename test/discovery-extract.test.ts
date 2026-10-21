@@ -176,6 +176,7 @@ type Result = {
   company: { id: string; name: string };
   profile: { products: string[]; quality: string | null; countries?: string[] } | null;
   identifiers: { type: string; value: string }[];
+  socials: Record<string, string[]>;
 };
 
 async function search(body: Record<string, unknown>) {
@@ -507,7 +508,7 @@ describe('read, extract, save, rank', () => {
     const text = new TextDecoder().decode(raw.slice(3));
     const lines = text.trimEnd().split('\r\n');
     expect(lines[0]).toBe(
-      'rank,country,tier,score,company,company_id,persona,fit,domains,phones,emails,google_maps_ids,products,roles,cities,profile_quality,profiled_at,evidence,reasons',
+      'rank,country,tier,score,company,company_id,persona,fit,domains,phones,emails,google_maps_ids,linkedin,socials,products,roles,cities,profile_quality,profiled_at,evidence,reasons',
     );
     expect(lines).toHaveLength(results.length + 1);
     expect(lines[1]).toMatch(/^1,SA,found,/);
@@ -578,7 +579,7 @@ describe('social profiles', () => {
       answer['evidence'] = [];
     };
     try {
-      const { results, detail } = await search({ product: 'diesel', side: 'suppliers' });
+      const { jobId, results, detail } = await search({ product: 'diesel', side: 'suppliers' });
       const sahel = named(results, 'Sahel Industrial Supplies')!;
       const five = [
         'linkedin.com/company/sahel-supplies',
@@ -593,6 +594,37 @@ describe('social profiles', () => {
       expect(serper.calls.filter(isLookup).some((c) => c.q.includes('Sahel'))).toBe(false);
       expect(detail.tasks[0]!.counts).toMatchObject({ linkedin_pages: 1 });
       expect(detail.tasks[0]!.counts['socials']).toBeGreaterThanOrEqual(1);
+
+      // The results row groups them as links, LinkedIn first, and lists them once more as identifiers.
+      expect(sahel.socials).toEqual({
+        linkedin: ['https://linkedin.com/company/sahel-supplies'],
+        instagram: ['https://instagram.com/sahelsupplies'],
+        x: ['https://x.com/sahelsupplies'],
+        facebook: ['https://facebook.com/sahelsupplies'],
+        youtube: ['https://youtube.com/channel/UCsahelSupplies01'],
+      });
+      expect(Object.keys(sahel.socials)[0]).toBe('linkedin');
+      expect(sahel.identifiers.filter((i) => i.type === 'social').map((i) => i.value).sort()).toEqual([...five].sort());
+      // A company with none says so with an empty object, not a missing key.
+      expect(results.find((r) => !r.identifiers.some((i) => i.type === 'social'))!.socials).toEqual({});
+
+      // The CSV has the same links: LinkedIn on its own, then every network.
+      const res = await app.fetch(
+        new Request(`http://engine.test/internal/discovery/jobs/${jobId}/results.csv`, {
+          headers: { 'X-Internal-Token': INTERNAL_TOKEN },
+        }),
+      );
+      const lines = (await res.text()).replace(/^\uFEFF/, '').trimEnd().split('\r\n');
+      const header = lines[0]!.split(',');
+      expect(header.slice(header.indexOf('google_maps_ids'), header.indexOf('google_maps_ids') + 3)).toEqual([
+        'google_maps_ids', 'linkedin', 'socials',
+      ]);
+      const row = lines.find((l) => l.includes(sahel.company.id))!.split(',');
+      expect(row[header.indexOf('linkedin')]).toBe('https://linkedin.com/company/sahel-supplies');
+      expect(row[header.indexOf('socials')]).toBe(
+        'https://linkedin.com/company/sahel-supplies; https://instagram.com/sahelsupplies; https://x.com/sahelsupplies; ' +
+          'https://facebook.com/sahelsupplies; https://youtube.com/channel/UCsahelSupplies01',
+      );
     } finally {
       SITES['najm-fuel.com/'] = page('najm-home.html');
     }

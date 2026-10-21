@@ -503,7 +503,7 @@ export const discoveryJobDetail: DiscoveryJobDetail = {
       country: 'SA',
       status: 'done',
       stage: 'rank',
-      counts: { ranked: 2 },
+      counts: { ranked: 2, socials: 1, linkedin_pages: 0, linkedin_lookups: 2, linkedin_found: 1, linkedin_lookup_failed: 1 },
       spend: { queries: 30, serperCalls: 20, cacheHits: 10, credits: 22, usd: 0.022 },
       error: null,
       attempts: 1,
@@ -570,6 +570,27 @@ export const discoveryQueries: DiscoveryQuery[] = [
     usd: 0,
     hits: 6,
   },
+  {
+    id: '502',
+    at: '2026-10-06T08:00:02.000Z',
+    tenantId: '11111111-1111-1111-1111-111111111111',
+    tenantName: 'Acme',
+    jobId: '99999999-9999-9999-9999-999999999999',
+    product: 'Microsilica (silica fume)',
+    side: 'buyers',
+    taskId: 'a',
+    country: 'SA',
+    persona: null,
+    kind: 'web',
+    q: '"Riyadh Diesel" site:linkedin.com/company',
+    gl: 'sa',
+    hl: 'en',
+    cached: false,
+    credits: 1,
+    usd: 0.001,
+    hits: 2,
+    lookup: 'linkedin',
+  },
 ];
 
 export const discoveryResults: DiscoveryResult[] = [
@@ -591,7 +612,15 @@ export const discoveryResults: DiscoveryResult[] = [
       quality: 'full',
       profiledAt: '2026-10-01T00:00:00.000Z',
     },
-    identifiers: [{ type: 'domain', value: 'riyadh-diesel.com.sa' }],
+    identifiers: [
+      { type: 'domain', value: 'riyadh-diesel.com.sa' },
+      { type: 'social', value: 'instagram.com/riyadhdiesel' },
+      { type: 'social', value: 'linkedin.com/company/riyadh-diesel' },
+    ],
+    socials: {
+      linkedin: ['https://linkedin.com/company/riyadh-diesel'],
+      instagram: ['https://instagram.com/riyadhdiesel'],
+    },
   },
 ];
 
